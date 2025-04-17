@@ -11,7 +11,7 @@ This latest version executes a bit faster and doesn't require `zabbix` user to h
 All you need to do to install it, is execute the command below:
 
 ```shell
-curl -S https://github.com/yaroslav/syschecks/-/raw/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/yaroslav-gwit/SysChecks_v2/refs/heads/main/install.sh | bash
 ```
 
 > The installation script can be used to update the software too.
