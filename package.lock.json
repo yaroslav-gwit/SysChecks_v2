@@ -1,0 +1,10 @@
+[
+  "containerd",
+  "docker",
+  "postgres",
+  "nvidia",
+  "cuda-",
+  "r-base",
+  "r-cran",
+  "r-recommended"
+]
