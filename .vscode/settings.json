@@ -1,3 +1,9 @@
 {
-  "cSpell.words": ["syschecks"]
+  "cSpell.words": [
+    "devel",
+    "facette",
+    "natsort",
+    "retpoline",
+    "syschecks"
+  ]
 }

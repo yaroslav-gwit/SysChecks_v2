@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*" # Triggers on version tags like v1.0.0
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+    - name: Get version from tag
+      id: version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      
+    - name: Get build info
+      id: build_info
+      run: |
+        echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        echo "BUILD_DATE=$(date -u '+%Y-%m-%d_%H:%M:%S_UTC')" >> $GITHUB_OUTPUT
+        
+    - name: Create build directory
+      run: mkdir -p bin
+
+    - name: Build cross-platform binaries
+      run: |
+        # Build flags with version information
+        LDFLAGS="-w -s -X 'syschecks/cmd.Version=v${{ steps.version.outputs.VERSION }}' -X 'syschecks/cmd.GitCommit=${{ steps.build_info.outputs.GIT_COMMIT }}' -X 'syschecks/cmd.BuildDate=${{ steps.build_info.outputs.BUILD_DATE }}'"
+        
+        # Define target platforms
+        platforms=(
+          "linux/amd64"
+          "linux/arm64" 
+          "linux/386"
+          "linux/arm"
+          "darwin/amd64"
+          "darwin/arm64"
+          "windows/amd64"
+        )
+
+        for platform in "${platforms[@]}"; do
+          IFS='/' read -r GOOS GOARCH <<< "$platform"
+          output_name="syschecks-$GOOS-$GOARCH"
+          
+          if [ "$GOOS" = "windows" ]; then
+            output_name+='.exe'
+          fi
+          
+          echo "Building for $GOOS/$GOARCH..."
+          env GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 \
+            go build -ldflags="$LDFLAGS" -o "bin/$output_name" .
+        done
+        
+    - name: Build Docker variants
+      run: |
+        # Build Ubuntu 18.04 variant
+        docker build -f Dockerfile -t syschecks-ubuntu18 \
+          --build-arg VERSION="v${{ steps.version.outputs.VERSION }}" \
+          --build-arg GIT_COMMIT="${{ steps.build_info.outputs.GIT_COMMIT }}" \
+          --build-arg BUILD_DATE="${{ steps.build_info.outputs.BUILD_DATE }}" \
+          .
+        CONTAINER_ID=$(docker create syschecks-ubuntu18)
+        docker cp "$CONTAINER_ID":/syschecks bin/syschecks-ubuntu18
+        docker rm "$CONTAINER_ID"
+        
+        # Build Alpine variant  
+        docker build -f Dockerfile.alpine -t syschecks-alpine \
+          --build-arg VERSION="v${{ steps.version.outputs.VERSION }}" \
+          --build-arg GIT_COMMIT="${{ steps.build_info.outputs.GIT_COMMIT }}" \
+          --build-arg BUILD_DATE="${{ steps.build_info.outputs.BUILD_DATE }}" \
+          .
+        CONTAINER_ID=$(docker create syschecks-alpine)
+        docker cp "$CONTAINER_ID":/syschecks bin/syschecks-alpine
+        docker rm "$CONTAINER_ID"
+
+      - name: Generate checksums
+        run: |
+          cd bin
+          sha256sum syschecks-* > checksums.txt
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "bin/syschecks-*,bin/checksums.txt"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: "SysChecks v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## SysChecks v${{ steps.version.outputs.VERSION }}
+
+            ### 🚀 Features
+            - Kernel reboot checks with JSON output
+            - Kernel cleanup functionality with `--keep` flag  
+            - System update checks for multiple package managers
+            - Cross-platform binary support
+
+            ### 📦 Binaries
+            - **Linux AMD64**: `syschecks-linux-amd64` (Ubuntu 16.04+ compatible)
+            - **Linux ARM64**: `syschecks-linux-arm64` 
+            - **Linux 386**: `syschecks-linux-386`
+            - **Linux ARM**: `syschecks-linux-arm`
+            - **macOS AMD64**: `syschecks-darwin-amd64`
+            - **macOS ARM64**: `syschecks-darwin-arm64` (Apple Silicon)
+            - **Windows AMD64**: `syschecks-windows-amd64.exe`
+            - **Linux (Ubuntu 18.04)**: `syschecks-ubuntu18` (Maximum compatibility)
+            - **Linux (Alpine)**: `syschecks-alpine` (Minimal static binary)
+
+            ### ⚡ Quick Install
+            ```bash
+            # Linux AMD64
+            wget https://github.com/yaroslav-gwit/SysChecks_v2/releases/download/v${{ steps.version.outputs.VERSION }}/syschecks-linux-amd64
+            chmod +x syschecks-linux-amd64
+            sudo mv syschecks-linux-amd64 /usr/local/bin/syschecks
+
+            # macOS (Homebrew coming soon)
+            wget https://github.com/yaroslav-gwit/SysChecks_v2/releases/download/v${{ steps.version.outputs.VERSION }}/syschecks-darwin-amd64
+            chmod +x syschecks-darwin-amd64
+            sudo mv syschecks-darwin-amd64 /usr/local/bin/syschecks
+            ```
+
+            ### 🔐 Verify Download
+            ```bash
+            # Download checksums and verify
+            wget https://github.com/yaroslav-gwit/SysChecks_v2/releases/download/v${{ steps.version.outputs.VERSION }}/checksums.txt
+            sha256sum -c checksums.txt
+            ```
+
+            ### 📖 Usage
+            ```bash
+            # Check kernel status
+            syschecks kernel
+
+            # Clean up old kernels (keep 4 newest)
+            syschecks cleanup --keep 4
+
+            # Check for system updates  
+            syschecks updates
+            ```
+          draft: false
+          prerelease: false

@@ -21,13 +21,18 @@ system and security updates checker, and some other cool things.`,
 )
 
 var (
+	versionVerbose bool
+
 	versionCmd = &cobra.Command{
 		Use:   "version",
-		Short: "Show version and exit",
-		Long:  `Show version and exit.`,
+		Short: "Show version information",
+		Long:  `Show version information including git commit, build date, and platform details.`,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("0.2")
-			os.Exit(0)
+			if versionVerbose {
+				fmt.Println(GetFullVersion())
+			} else {
+				fmt.Printf("syschecks %s\n", GetVersion())
+			}
 		},
 	}
 )
@@ -44,6 +49,9 @@ func Execute() {
 func init() {
 	rootCmd.AddCommand(kernelCmd)
 	kernelCmd.Flags().BoolVar(&kernelJsonPretty, "json-pretty", false, "Use JSON pretty (human readable) output.")
+
+	kernelCmd.AddCommand(kernelCleanupCmd)
+	kernelCleanupCmd.Flags().IntVar(&kernelNumberToKeep, "keep", 4, "Number of kernels to keep (including the running kernel)")
 
 	rootCmd.AddCommand(updatesCmd)
 	updatesCmd.Flags().BoolVar(&updatesJsonPretty, "json-pretty", false, "Use JSON pretty (human readable) output.")
@@ -74,4 +82,5 @@ func init() {
 
 	// Print version and exit
 	rootCmd.AddCommand(versionCmd)
+	versionCmd.Flags().BoolVarP(&versionVerbose, "verbose", "v", false, "Show detailed version information")
 }

@@ -1,0 +1,51 @@
+# Alpine Linux Dockerfile for maximum compatibility and minimal size
+# Alpine uses musl libc which creates truly portable static binaries
+FROM alpine:3.18 AS builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+    go \
+    git \
+    ca-certificates \
+    gcc \
+    musl-dev
+
+# Set Go environment
+ENV GOPATH=/go
+ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
+
+# Create workspace
+WORKDIR /app
+
+# Copy go module files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build arguments for version information
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+# Build static binary
+# Alpine's musl libc makes truly portable static binaries
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s -extldflags '-static' -X 'syschecks/cmd.Version=${VERSION}' -X 'syschecks/cmd.GitCommit=${GIT_COMMIT}' -X 'syschecks/cmd.BuildDate=${BUILD_DATE}'" \
+    -a -installsuffix cgo \
+    -o syschecks \
+    .
+
+# Final stage: minimal scratch image
+FROM scratch
+
+# Copy the binary
+COPY --from=builder /app/syschecks /syschecks
+
+# Copy CA certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+ENTRYPOINT ["/syschecks"]

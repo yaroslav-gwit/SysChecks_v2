@@ -1,0 +1,62 @@
+# Multi-stage Dockerfile for SysChecks
+# Stage 1: Builder using Debian 10 for maximum compatibility
+FROM debian:10-slim AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    ca-certificates \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go
+ENV GO_VERSION=1.21.5
+ENV GOROOT=/usr/local/go
+ENV GOPATH=/go
+ENV PATH=$GOROOT/bin:$GOPATH/bin:$PATH
+
+RUN wget -O go.tar.gz "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+    && tar -C /usr/local -xzf go.tar.gz \
+    && rm go.tar.gz
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build static binary for maximum portability
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags='-w -s -extldflags "-static"' \
+    -a -installsuffix cgo \
+    -o syschecks \
+    .
+
+# Stage 2: Runtime image (minimal)
+FROM scratch AS runtime
+
+# Copy the binary
+COPY --from=builder /app/syschecks /syschecks
+
+# Copy CA certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+ENTRYPOINT ["/syschecks"]
+
+# Stage 3: Debug image (with shell for troubleshooting)
+FROM debian:10-slim AS debug
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/syschecks /usr/local/bin/syschecks
+
+ENTRYPOINT ["/usr/local/bin/syschecks"]
