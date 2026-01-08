@@ -679,6 +679,9 @@ print_post_release() {
 # ============================================================================
 
 main() {
+    # Save positional arguments before parsing options
+    local args=("$@")
+    
     # Parse options
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -716,8 +719,8 @@ main() {
     done
     
     # Get positional arguments
-    VERSION="${1:-}"
-    RELEASE_TYPE="${2:-release}"
+    local VERSION="${1:-}"
+    local RELEASE_TYPE="${2:-release}"
     
     # Validate arguments
     if [ -z "$VERSION" ]; then
