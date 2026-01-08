@@ -180,18 +180,6 @@ check_prerequisites() {
     fi
     log_success "Git repository is ready"
     
-    # Check for existing tag
-    if git tag -l "v$VERSION" | grep -q "v$VERSION"; then
-        if [ "$FORCE" = false ]; then
-            log_warning "Tag v$VERSION already exists"
-            if ! confirm "Delete and recreate?"; then
-                exit 1
-            fi
-            git tag -d "v$VERSION" 2>/dev/null || true
-            git push origin ":refs/tags/v$VERSION" 2>/dev/null || true
-        fi
-    fi
-    
     log_success "All prerequisites satisfied"
 }
 
