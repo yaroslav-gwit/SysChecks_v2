@@ -280,15 +280,14 @@ build_binaries() {
     # Build with Docker for maximum compatibility (if Docker available)
     if command -v docker &> /dev/null; then
         log_info "Building portable Linux binary with Docker (Ubuntu 18.04)..."
-        export VERSION="v$VERSION"
-        if sudo -E ./build-advanced.sh docker ubuntu18; then
+        # Pass VERSION to the build script without modifying/unsetting the global variable
+        if VERSION="v$VERSION" sudo -E ./build-advanced.sh docker ubuntu18; then
             rm -f "$BUILD_DIR/syschecks-linux-amd64"
             mv "$BUILD_DIR/syschecks-ubuntu18" "$BUILD_DIR/syschecks-linux-amd64"
             log_success "Built syschecks-linux-amd64"
         else
             log_warning "Docker build failed, falling back to native build"
         fi
-        unset VERSION
     fi
     
     # Cross-compile for other platforms
