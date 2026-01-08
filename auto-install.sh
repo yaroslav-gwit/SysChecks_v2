@@ -8,7 +8,7 @@ set -e
 # Configuration
 REPO="yaroslav-gwit/SysChecks_v2"
 INSTALL_DIR="/opt/syschecks"
-BIN_LINK="/usr/bin/syschecks"
+BIN_LINK="/bin/syschecks"
 BINARY_NAME="syschecks"
 REMOTE_BINARY_NAME="syschecks-linux-amd64"
 PACKAGE_LOCK_NAME="package.lock.json"
@@ -96,9 +96,28 @@ download_file() {
     print_success "Downloaded $description"
 }
 
+cleanup_old_binaries() {
+    print_info "Cleaning up old binary locations..."
+    local locations=(
+        "/usr/bin/syschecks"
+        "/usr/local/bin/syschecks"
+        "/bin/syschecks"
+    )
+    
+    for location in "${locations[@]}"; do
+        if [ -f "$location" ] || [ -L "$location" ]; then
+            rm -f "$location"
+            print_success "Removed old binary: $location"
+        fi
+    done
+}
+
 install_binary() {
     local version="$1"
     local is_update="$2"
+    
+    # Clean up old binaries first
+    cleanup_old_binaries
     
     # Create installation directory if it doesn't exist
     if [ ! -d "$INSTALL_DIR" ]; then
@@ -138,7 +157,7 @@ install_package_lock() {
     
     if [ "$is_update" = "true" ]; then
         # For updates, download as package.lock.latest.json
-        local lock_url="https://github.com/$REPO/releases/download/v$version/$PACKAGE_LOCK_NAME"
+        local lock_url="https://raw.githubusercontent.com/$REPO/refs/tags/v$version/$PACKAGE_LOCK_NAME"
         local lock_path="$INSTALL_DIR/package.lock.latest.json"
         download_file "$lock_url" "$lock_path" "latest package lock (as package.lock.latest.json)"
         chmod 0644 "$lock_path"
@@ -148,7 +167,7 @@ install_package_lock() {
         print_info "Review package.lock.latest.json and merge changes if needed"
     else
         # For new installations, download as package.lock.json
-        local lock_url="https://github.com/$REPO/releases/download/v$version/$PACKAGE_LOCK_NAME"
+        local lock_url="https://raw.githubusercontent.com/$REPO/refs/tags/v$version/$PACKAGE_LOCK_NAME"
         local lock_path="$INSTALL_DIR/$PACKAGE_LOCK_NAME"
         download_file "$lock_url" "$lock_path" "package lock file"
         chmod 0644 "$lock_path"
