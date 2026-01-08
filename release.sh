@@ -275,8 +275,6 @@ build_binaries() {
     
     local platforms=(
         "linux/arm64"
-        "darwin/amd64"
-        "darwin/arm64"
     )
     
     for platform in "${platforms[@]}"; do
@@ -446,11 +444,6 @@ sudo mv syschecks-linux-amd64 /usr/local/bin/syschecks
 wget https://github.com/${REPO}/releases/download/v${version}/syschecks-linux-arm64
 chmod +x syschecks-linux-arm64
 sudo mv syschecks-linux-arm64 /usr/local/bin/syschecks
-
-# macOS (Apple Silicon)
-wget https://github.com/${REPO}/releases/download/v${version}/syschecks-darwin-arm64
-chmod +x syschecks-darwin-arm64
-sudo mv syschecks-darwin-arm64 /usr/local/bin/syschecks
 \`\`\`
 
 ### Verify Checksums

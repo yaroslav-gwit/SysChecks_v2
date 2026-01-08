@@ -107,15 +107,12 @@ build_cross() {
     echo -e "${BLUE}Cross-compiling for multiple architectures...${NC}"
     mkdir -p "$BUILD_DIR"
     
-    # Define target platforms
+    # Define target platforms (Linux only - this tool is Linux-specific)
     platforms=(
         "linux/amd64"
         "linux/arm64"
         "linux/386"
         "linux/arm"
-        "darwin/amd64"
-        "darwin/arm64"
-        "windows/amd64"
     )
     
     for platform in "${platforms[@]}"; do

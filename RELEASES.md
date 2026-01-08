@@ -141,9 +141,9 @@ Each release includes multiple binary variants:
 |--------|----------|---------------|----------|
 | `syschecks-linux-amd64` | Linux x64 | Ubuntu 16.04+ | Standard Linux servers |
 | `syschecks-linux-arm64` | Linux ARM64 | Most ARM64 systems | ARM servers (AWS Graviton, etc.) |
-| `syschecks-darwin-amd64` | macOS Intel | macOS 10.12+ | Intel Macs |
-| `syschecks-darwin-arm64` | macOS Apple Silicon | macOS 11+ | M1/M2/M3 Macs |
 | `checksums-sha256.txt` | N/A | N/A | Verification checksums |
+
+> **Note:** SysChecks is a Linux-only tool. macOS and Windows are not supported.
 
 ## 🔄 Release Workflow
 
