@@ -274,11 +274,29 @@ BANNER_EOF
 verify_installation() {
     print_info "Verifying installation..."
     
+    # Clear shell command cache
+    hash -r 2>/dev/null || true
+    
+    # Show which binary is being used
+    local binary_path
+    binary_path=$(which syschecks 2>/dev/null || echo "not found")
+    
+    if [ "$binary_path" != "$BIN_LINK" ] && [ "$binary_path" != "not found" ]; then
+        print_warning "Found syschecks at unexpected location: $binary_path"
+        print_info "Expected location: $BIN_LINK"
+    fi
+    
     if command -v syschecks &> /dev/null; then
         local version
         version=$(syschecks version 2>/dev/null || echo "unknown")
         print_success "syschecks is installed and working"
         print_info "Installed version: $version"
+        print_info "Binary location: $binary_path"
+        
+        # Recommend shell restart if needed
+        if [ "$binary_path" != "$BIN_LINK" ]; then
+            print_warning "You may need to restart your shell or run: hash -r"
+        fi
         return 0
     else
         print_error "Installation verification failed"
@@ -290,6 +308,8 @@ verify_installation() {
 show_usage() {
     echo ""
     echo -e "${GREEN}Installation completed successfully! 🎉${NC}"
+    echo ""
+    echo -e "${YELLOW}Important:${NC} If you're updating, restart your shell or run: ${BLUE}hash -r${NC}"
     echo ""
     echo -e "${BLUE}Usage examples:${NC}"
     echo "  syschecks version              # Show version"

@@ -8,8 +8,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/bin"
 
-# Get version information from git
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+# Get version information from git (or use provided VERSION env var)
+VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo "dev")}"
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE=$(date -u '+%Y-%m-%d_%H:%M:%S_UTC')
 

@@ -201,16 +201,47 @@ check_existing_release() {
     if gh release view "v$version" --repo "$REPO" &> /dev/null; then
         if [ "$FORCE" = false ]; then
             log_warning "Release v$version already exists on GitHub"
-            if ! confirm "Delete and recreate?"; then
-                exit 1
+            echo ""
+            echo "Options:"
+            echo "  1) Delete and recreate the release"
+            echo "  2) Upload new binaries to existing release (replace)"
+            echo "  3) Cancel"
+            echo ""
+            read -r -p "Choose [1/2/3]: " choice
+            
+            case "$choice" in
+                1)
+                    if [ "$DRY_RUN" = false ]; then
+                        log_info "Deleting existing release v$version..."
+                        gh release delete "v$version" --repo "$REPO" --yes 2>/dev/null || true
+                        # Also delete the tag
+                        git tag -d "v$version" 2>/dev/null || true
+                        git push origin ":refs/tags/v$version" 2>/dev/null || true
+                    fi
+                    return 0  # Proceed with full release creation
+                    ;;
+                2)
+                    log_info "Will upload new binaries to existing release"
+                    return 1  # Signal to skip release creation, just upload
+                    ;;
+                3|*)
+                    log_warning "Release cancelled"
+                    exit 0
+                    ;;
+            esac
+        else
+            # Force mode - delete and recreate
+            if [ "$DRY_RUN" = false ]; then
+                log_info "Deleting existing release v$version..."
+                gh release delete "v$version" --repo "$REPO" --yes 2>/dev/null || true
+                git tag -d "v$version" 2>/dev/null || true
+                git push origin ":refs/tags/v$version" 2>/dev/null || true
             fi
-        fi
-        
-        if [ "$DRY_RUN" = false ]; then
-            log_info "Deleting existing release v$version..."
-            gh release delete "v$version" --repo "$REPO" --yes 2>/dev/null || true
+            return 0
         fi
     fi
+    
+    return 0  # No existing release
 }
 
 # ============================================================================
@@ -261,13 +292,15 @@ build_binaries() {
     # Build with Docker for maximum compatibility (if Docker available)
     if command -v docker &> /dev/null; then
         log_info "Building portable Linux binary with Docker (Ubuntu 18.04)..."
-        if sudo ./build-advanced.sh docker ubuntu18; then
+        export VERSION="v$VERSION"
+        if sudo -E ./build-advanced.sh docker ubuntu18; then
             rm -f "$BUILD_DIR/syschecks-linux-amd64"
             mv "$BUILD_DIR/syschecks-ubuntu18" "$BUILD_DIR/syschecks-linux-amd64"
             log_success "Built syschecks-linux-amd64"
         else
             log_warning "Docker build failed, falling back to native build"
         fi
+        unset VERSION
     fi
     
     # Cross-compile for other platforms
@@ -559,6 +592,49 @@ create_release() {
     echo -e "\n${YELLOW}View release:${NC} https://github.com/$REPO/releases/tag/v$version"
 }
 
+upload_binaries_to_existing() {
+    local version="$1"
+    
+    log_step "Uploading Binaries to Existing Release"
+    
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY RUN] Would upload binaries to existing release v$version"
+        log_info "Binaries to upload:"
+        for f in "$BUILD_DIR"/syschecks-* "$BUILD_DIR"/checksums-*.txt; do
+            [ -f "$f" ] && echo "  - $(basename "$f")"
+        done
+        return 0
+    fi
+    
+    log_info "Deleting old assets from release v$version..."
+    # Delete existing assets to avoid conflicts
+    for asset in $(gh release view "v$version" --repo "$REPO" --json assets -q '.assets[].name' 2>/dev/null || true); do
+        if [[ "$asset" == syschecks-* ]] || [[ "$asset" == checksums-* ]]; then
+            log_info "Deleting old asset: $asset"
+            gh release delete-asset "v$version" "$asset" --repo "$REPO" --yes 2>/dev/null || true
+        fi
+    done
+    
+    log_info "Uploading new binaries..."
+    
+    # Upload all binaries
+    for binary in "$BUILD_DIR"/syschecks-*; do
+        if [ -f "$binary" ]; then
+            log_info "Uploading $(basename "$binary")..."
+            gh release upload "v$version" "$binary" --repo "$REPO" --clobber
+        fi
+    done
+    
+    # Upload checksum file
+    if [ -f "$BUILD_DIR/checksums-sha256.txt" ]; then
+        log_info "Uploading checksums-sha256.txt..."
+        gh release upload "v$version" "$BUILD_DIR/checksums-sha256.txt" --repo "$REPO" --clobber
+    fi
+    
+    log_success "Binaries uploaded to release v$version successfully!"
+    echo -e "\n${YELLOW}View release:${NC} https://github.com/$REPO/releases/tag/v$version"
+}
+
 # ============================================================================
 # Summary Functions
 # ============================================================================
@@ -676,26 +752,42 @@ main() {
     
     # Execute release pipeline
     check_prerequisites
-    check_existing_release "$VERSION"
+    
+    # Check if release exists and get user choice
+    UPLOAD_ONLY=false
+    if ! check_existing_release "$VERSION"; then
+        UPLOAD_ONLY=true
+    fi
+    
     run_tests
     build_binaries
     generate_checksums
-    
-    # Generate release notes
-    RELEASE_NOTES=$(generate_release_notes "$VERSION" "$RELEASE_TYPE")
     
     # Show summary and confirm
     print_summary "$VERSION" "$RELEASE_TYPE"
     
     if [ "$DRY_RUN" = false ] && [ "$FORCE" = false ]; then
-        if ! confirm "Create this release?"; then
-            log_warning "Release cancelled"
-            exit 0
+        if [ "$UPLOAD_ONLY" = true ]; then
+            if ! confirm "Upload binaries to existing release?"; then
+                log_warning "Upload cancelled"
+                exit 0
+            fi
+        else
+            if ! confirm "Create this release?"; then
+                log_warning "Release cancelled"
+                exit 0
+            fi
         fi
     fi
     
-    # Create the release
-    create_release "$VERSION" "$RELEASE_TYPE" "$RELEASE_NOTES"
+    # Create the release or upload binaries
+    if [ "$UPLOAD_ONLY" = true ]; then
+        upload_binaries_to_existing "$VERSION"
+    else
+        # Generate release notes
+        RELEASE_NOTES=$(generate_release_notes "$VERSION" "$RELEASE_TYPE")
+        create_release "$VERSION" "$RELEASE_TYPE" "$RELEASE_NOTES"
+    fi
     
     # Post-release info
     if [ "$DRY_RUN" = false ]; then
