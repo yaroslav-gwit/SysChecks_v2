@@ -196,6 +196,47 @@ create_initial_cache() {
     fi
 }
 
+setup_login_banner() {
+    print_info "Setting up SSH login banner..."
+    
+    local banner_script="/etc/profile.d/syschecks_banner.sh"
+    
+    # Check if banner integration already exists somewhere in /etc/profile or profile.d
+    if grep -rq "syschecks banner" /etc/profile /etc/profile.d/ 2>/dev/null; then
+        print_warning "Banner integration already exists (skipping)"
+        print_info "Found in: $(grep -rl 'syschecks banner' /etc/profile /etc/profile.d/ 2>/dev/null | head -1)"
+        return 0
+    fi
+    
+    # Create the banner script with proper checks
+    cat > "$banner_script" << 'BANNER_EOF'
+#!/bin/bash
+# SysChecks Login Banner
+# Shows system information on interactive SSH login
+
+# Only run for interactive sessions
+[[ $- != *i* ]] && return
+
+# Check if syschecks is available
+command -v syschecks &>/dev/null || return
+
+# Detect if this is an SSH session or local console
+if [[ -n "$SSH_CLIENT" ]] || [[ -n "$SSH_TTY" ]] || [[ -n "$SSH_CONNECTION" ]]; then
+    # SSH session - show full banner with emojis
+    syschecks banner 2>/dev/null
+else
+    # Local console (tty) - show simplified version without emojis
+    syschecks banner --no-emojies 2>/dev/null
+fi
+BANNER_EOF
+
+    chmod 0755 "$banner_script"
+    chown root:root "$banner_script"
+    
+    print_success "Login banner configured at $banner_script"
+    print_info "Banner will show on next SSH login"
+}
+
 verify_installation() {
     print_info "Verifying installation..."
     
@@ -224,8 +265,9 @@ show_usage() {
     echo "  syschecks banner               # Display system banner"
     echo "  syschecks --help               # Show all commands"
     echo ""
-    echo -e "${BLUE}To display banner on SSH login, run:${NC}"
-    echo "  echo '([ -z \"\$PS1\" ] && true) || syschecks banner' >> /etc/profile.d/syschecks_banner.sh && chmod 0755 /etc/profile.d/syschecks_banner.sh"
+    echo -e "${BLUE}Login banner:${NC}"
+    echo "  The system banner is automatically displayed on SSH login."
+    echo "  Config: /etc/profile.d/syschecks_banner.sh"
     echo ""
 }
 
@@ -263,6 +305,7 @@ enable_bash_completion
 if [ "$IS_UPDATE" = "false" ]; then
     setup_cron_jobs
     create_initial_cache
+    setup_login_banner
 else
     print_info "Skipping cron setup (update mode - preserving existing configuration)"
 fi
