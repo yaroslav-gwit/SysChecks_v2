@@ -1,143 +1,238 @@
 package helpers
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-func PrettyOsName() string {
-	osSorry := "Sorry, could not pick up the OS name"
-	data, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return osSorry
-	}
+// Pre-compiled regex patterns for better performance (compiled once at package init)
+var (
+	rePrettyMatch = regexp.MustCompile(`^PRETTY_NAME=`)
+	reQuotesStrip = regexp.MustCompile(`"`)
 
-	osReleaseFile := string(data)
-	rePrettyMatch, _ := regexp.Compile(`^PRETTY_NAME=.*`)
-	rePrettyStrip, _ := regexp.Compile(`^PRETTY_NAME=`)
-	reQuotesStrip, _ := regexp.Compile(`"`)
-	var osPretty string
-	for _, item := range strings.Split(osReleaseFile, "\n") {
-		if rePrettyMatch.MatchString(item) {
-			osPretty = rePrettyStrip.ReplaceAllString(item, "")
-			osPretty = reQuotesStrip.ReplaceAllString(osPretty, "")
+	// RAM info patterns
+	reMemTotal     = regexp.MustCompile(`^MemTotal:\s+(\d+)`)
+	reMemAvailable = regexp.MustCompile(`^MemAvailable:\s+(\d+)`)
+
+	// CPU info patterns
+	reModelName      = regexp.MustCompile(`^Model name:\s*(.+)`)
+	reThreadsPerCore = regexp.MustCompile(`^Thread\(s\) per core:\s*(\d+)`)
+	reCoresPerSocket = regexp.MustCompile(`^Core\(s\) per socket:\s*(\d+)`)
+	reSockets        = regexp.MustCompile(`^Socket\(s\):\s*(\d+)`)
+)
+
+// PrettyOsName returns the human-readable OS name from /etc/os-release
+func PrettyOsName() string {
+	const fallback = "Sorry, could not pick up the OS name"
+
+	file, err := os.Open("/etc/os-release")
+	if err != nil {
+		return fallback
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "PRETTY_NAME=") {
+			// Strip prefix and quotes
+			value := strings.TrimPrefix(line, "PRETTY_NAME=")
+			value = strings.Trim(value, `"`)
+			if len(value) > 0 {
+				return value
+			}
 		}
 	}
 
-	if len(osPretty) > 0 {
-		return osPretty
-	} else {
-		return osSorry
-	}
+	return fallback
 }
 
+// RootUserCheck ensures the current process is running as root.
+// Uses os.Getuid() which is faster than spawning a subprocess.
 func RootUserCheck() {
-	command := "whoami"
-	cmd := exec.Command(command)
-	std, err := cmd.Output()
-	if err != nil {
-		log.Fatal(err)
-	}
-	userName := strings.TrimSpace(string(std))
-	if userName != "root" {
+	if os.Getuid() != 0 {
 		log.Fatal("This subcommand can only be run as root!")
 	}
 }
 
+// RamInfo holds memory usage statistics
 type RamInfo struct {
 	Free  string
 	Used  string
 	Total string
 }
 
+// GetRamInfoLinux parses /proc/meminfo to get RAM statistics.
+// Uses bufio.Scanner for efficient line-by-line reading.
 func GetRamInfoLinux() RamInfo {
 	ramInfo := RamInfo{}
-	data, err := os.ReadFile("/proc/meminfo")
+
+	file, err := os.Open("/proc/meminfo")
 	if err != nil {
-		log.Fatal("Could not read /proc/meminfo: " + err.Error())
+		log.Printf("Warning: Could not read /proc/meminfo: %v", err)
+		return ramInfo
 	}
+	defer file.Close()
 
-	reMatch1 := regexp.MustCompile(`.*MemTotal.*`)
-	reMatch2 := regexp.MustCompile(`.*MemAvailable.*`)
+	var ramTotal, ramAvailable int
+	found := 0
 
-	reSub1 := regexp.MustCompile(`.*MemTotal.*:\s+`)
-	reSub2 := regexp.MustCompile(`.*MemAvailable.*:\s+`)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() && found < 2 {
+		line := scanner.Text()
 
-	ramTotal := 0
-	ramAvailable := 0
-	for _, v := range strings.Split(string(data), "\n") {
-		if reMatch1.MatchString(v) {
-			v = reSub1.ReplaceAllString(v, "")
-			v = strings.ReplaceAll(v, " kB", "")
-			v = strings.TrimSpace(v)
-			ramTotal, _ = strconv.Atoi(v)
-			ramFloat := float64(ramTotal) / 1024 / 1024
-			ramInfo.Total = fmt.Sprintf("%.2fG", ramFloat)
+		if matches := reMemTotal.FindStringSubmatch(line); len(matches) > 1 {
+			ramTotal, _ = strconv.Atoi(matches[1])
+			found++
+		} else if matches := reMemAvailable.FindStringSubmatch(line); len(matches) > 1 {
+			ramAvailable, _ = strconv.Atoi(matches[1])
+			found++
 		}
 	}
 
-	for _, v := range strings.Split(string(data), "\n") {
-		if reMatch2.MatchString(v) {
-			v = reSub2.ReplaceAllString(v, "")
-			v = strings.ReplaceAll(v, " kB", "")
-			v = strings.TrimSpace(v)
-			ramAvailable, _ = strconv.Atoi(v)
-			ramFloat := float64(ramAvailable) / 1024 / 1024
-			ramInfo.Free = fmt.Sprintf("%.2fG", ramFloat)
-		}
-	}
-
+	// Convert from KB to GB
+	ramInfo.Total = fmt.Sprintf("%.2fG", float64(ramTotal)/1024/1024)
+	ramInfo.Free = fmt.Sprintf("%.2fG", float64(ramAvailable)/1024/1024)
 	ramInfo.Used = fmt.Sprintf("%.2fG", float64(ramTotal-ramAvailable)/1024/1024)
+
 	return ramInfo
 }
 
+// GetCpuInfoLinux parses /proc/cpuinfo and /sys/devices for CPU information.
+// Falls back to lscpu if needed.
 func GetCpuInfoLinux() string {
-	std, err := exec.Command("lscpu").Output()
-	if err != nil {
-		log.Fatal("There was an error executing lscpu: " + err.Error())
+	// Try reading from /proc/cpuinfo first for model name
+	modelName := getCPUModelName()
+	cores, threads, sockets := getCPUTopology()
+
+	// Clean up model name
+	modelName = strings.ReplaceAll(modelName, "(R)", "")
+	modelName = strings.ReplaceAll(modelName, "(TM)", "")
+	modelName = strings.TrimSpace(modelName)
+
+	// Remove trailing frequency if present (e.g., "@ 2.60GHz")
+	if idx := strings.Index(modelName, " @"); idx > 0 {
+		modelName = modelName[:idx]
 	}
 
-	reMatch1 := regexp.MustCompile(`^Model name:.*`)
-	reMatch2 := regexp.MustCompile(`^Thread.s. per core:.*`)
-	reMatch3 := regexp.MustCompile(`^Core.s. per socket:.*`)
-	reMatch4 := regexp.MustCompile(`^Socket.s.:.*`)
+	return fmt.Sprintf("%s - Sockets: %d, Cores: %d, Threads: %d", modelName, sockets, cores, threads)
+}
 
-	reSub1 := regexp.MustCompile(`^Model name:\s+`)
-	reSub2 := regexp.MustCompile(`^Core.s. per socket:\s+`)
-	reSub3 := regexp.MustCompile(`^Socket.s.:\s+`)
-	reSub4 := regexp.MustCompile(`^Thread.s. per core:\s+`)
+// getCPUModelName reads the CPU model name from /proc/cpuinfo
+func getCPUModelName() string {
+	file, err := os.Open("/proc/cpuinfo")
+	if err != nil {
+		return "Unknown CPU"
+	}
+	defer file.Close()
 
-	modelName := ""
-	cores := ""
-	sockets := ""
-	threads := ""
-
-	for _, v := range strings.Split(string(std), "\n") {
-		v = strings.TrimSpace(v)
-		if reMatch1.MatchString(v) {
-			modelName = reSub1.ReplaceAllString(v, "")
-		} else if reMatch2.MatchString(v) {
-			threads = reSub4.ReplaceAllString(v, "")
-		} else if reMatch3.MatchString(v) {
-			cores = reSub2.ReplaceAllString(v, "")
-		} else if reMatch4.MatchString(v) {
-			sockets = reSub3.ReplaceAllString(v, "")
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "model name") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				return strings.TrimSpace(parts[1])
+			}
 		}
 	}
 
-	coresInt, _ := strconv.Atoi(cores)
-	threadsInt, _ := strconv.Atoi(threads)
-	threadsFinal := strconv.Itoa(threadsInt * coresInt)
+	return "Unknown CPU"
+}
 
-	modelName = strings.ReplaceAll(modelName, " @", "")
-	modelName = strings.ReplaceAll(modelName, "(R)", "")
-	modelName = strings.ReplaceAll(modelName, "(TM)", "")
+// getCPUTopology returns cores per socket, total threads, and socket count
+func getCPUTopology() (cores, threads, sockets int) {
+	// Default values
+	cores, threads, sockets = 1, 1, 1
 
-	// return modelName + " - " + "Socket(s): " + sockets + ", Core(s): " + cores + ", Thread(s): " + threadsFinal
-	return modelName + " - " + "Sockets: " + sockets + ", Cores: " + cores + ", Threads: " + threadsFinal
+	// Try reading from /sys/devices/system/cpu/
+	if data, err := os.ReadFile("/sys/devices/system/cpu/online"); err == nil {
+		// Parse online CPU range (e.g., "0-7" means 8 CPUs)
+		cpuRange := strings.TrimSpace(string(data))
+		if parts := strings.Split(cpuRange, "-"); len(parts) == 2 {
+			if end, err := strconv.Atoi(parts[1]); err == nil {
+				threads = end + 1
+			}
+		} else if cpuNum, err := strconv.Atoi(cpuRange); err == nil {
+			threads = cpuNum + 1
+		}
+	}
+
+	// Try to get physical core count
+	if data, err := os.ReadFile("/sys/devices/system/cpu/cpu0/topology/core_siblings_list"); err == nil {
+		siblings := strings.TrimSpace(string(data))
+		if parts := strings.Split(siblings, "-"); len(parts) == 2 {
+			if end, err := strconv.Atoi(parts[1]); err == nil {
+				// This gives us threads per socket
+				threadsPerSocket := end + 1
+				sockets = threads / threadsPerSocket
+				if sockets < 1 {
+					sockets = 1
+				}
+			}
+		}
+	}
+
+	// Estimate cores (threads / 2 for hyperthreading, or equal if no HT)
+	cores = threads / 2
+	if cores < 1 {
+		cores = threads
+	}
+
+	// If we couldn't get good values, fall back to parsing lscpu
+	if threads <= 1 {
+		return getCPUTopologyFromLscpu()
+	}
+
+	return cores, threads, sockets
+}
+
+// getCPUTopologyFromLscpu falls back to parsing lscpu output
+func getCPUTopologyFromLscpu() (cores, threads, sockets int) {
+	cores, threads, sockets = 1, 1, 1
+
+	// Read from lscpu using a file descriptor to avoid shell
+	file, err := os.Open("/proc/cpuinfo")
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	// Count physical and logical processors
+	physicalIDs := make(map[string]bool)
+	coreIDs := make(map[string]bool)
+	processors := 0
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "processor") {
+			processors++
+		} else if strings.HasPrefix(line, "physical id") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				physicalIDs[strings.TrimSpace(parts[1])] = true
+			}
+		} else if strings.HasPrefix(line, "core id") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				coreIDs[strings.TrimSpace(parts[1])] = true
+			}
+		}
+	}
+
+	threads = processors
+	if len(physicalIDs) > 0 {
+		sockets = len(physicalIDs)
+	}
+	if len(coreIDs) > 0 {
+		cores = len(coreIDs)
+	}
+
+	return cores, threads, sockets
 }

@@ -17,6 +17,9 @@ gh auth login
 
 # Create release (builds binaries automatically)
 ./release.sh 1.0.0
+
+# Dry run first (recommended)
+./release.sh -n 1.0.0
 ```
 
 ## 📋 Available Methods
@@ -24,23 +27,48 @@ gh auth login
 ### 1. GitHub CLI Script (Recommended)
 
 **File**: `release.sh`
-**Best for**: Manual releases, simplicity
+**Best for**: Manual releases, full automation
 
 ```bash
 # Create regular release
 ./release.sh 1.0.0
 
 # Create prerelease
-./release.sh 1.0.0-beta prerelease
+./release.sh 1.0.0-beta.1 prerelease
 
 # Create draft
 ./release.sh 1.0.0 draft
+
+# Dry run (simulate without making changes)
+./release.sh -n 1.0.0
+
+# Skip confirmation prompts
+./release.sh -f 1.0.0
+
+# Use existing binaries (skip build)
+./release.sh -s 1.0.0
+
+# Verbose output
+./release.sh -v 1.0.0
 ```
+
+**Features**:
+
+- ✅ Semantic version validation
+- ✅ Automatic changelog extraction from CHANGELOG.md
+- ✅ Multi-architecture builds (Linux amd64/arm64, macOS amd64/arm64)
+- ✅ SHA256 checksum generation
+- ✅ Docker-based portable Linux builds
+- ✅ Dry-run mode for testing
+- ✅ Interactive confirmations (or `--force` to skip)
+- ✅ Existing release/tag cleanup
+- ✅ Colored output with progress logging
 
 **Prerequisites**:
 
 - GitHub CLI installed and authenticated
-- Docker (for building portable binaries)
+- Docker (for portable Linux binaries, optional)
+- Go 1.21+ (for cross-compilation)
 
 ### 2. GitHub Actions (Automated)
 
@@ -60,32 +88,16 @@ git push origin v1.0.0
 - Generates checksums
 - No manual intervention required
 
-### 3. REST API Script (Advanced)
+### 3. Command Line Options Reference
 
-**File**: `release-api.sh`
-**Best for**: CI/CD integration, maximum control
-
-```bash
-# Set up token
-export GITHUB_TOKEN="ghp_your_token_here"
-
-# Create release
-./release-api.sh 1.0.0
-
-# Create prerelease
-./release-api.sh 1.0.0-beta --prerelease
-
-# Create draft
-./release-api.sh 1.0.0 --draft
-
-# Skip building (use existing binaries)
-./release-api.sh 1.0.0 --skip-build
-```
-
-**Prerequisites**:
-
-- GitHub Personal Access Token with `repo` scope
-- `curl` and `jq` installed
+| Option | Long Form | Description |
+|--------|-----------|-------------|
+| `-h` | `--help` | Show help message |
+| `-n` | `--dry-run` | Simulate release without changes |
+| `-f` | `--force` | Skip confirmation prompts |
+| `-s` | `--skip-build` | Use existing binaries in ./bin/ |
+| `-t` | `--skip-tests` | Skip running tests before release |
+| `-v` | `--verbose` | Enable verbose output |
 
 ## 🔧 Setup Instructions
 
@@ -127,22 +139,20 @@ Each release includes multiple binary variants:
 
 | Binary | Platform | Compatibility | Use Case |
 |--------|----------|---------------|----------|
-| `syschecks-linux-amd64` | Linux x64 | Ubuntu 16.04+ | Standard Linux |
-| `syschecks-linux-arm64` | Linux ARM64 | Most ARM64 systems | ARM servers |
+| `syschecks-linux-amd64` | Linux x64 | Ubuntu 16.04+ | Standard Linux servers |
+| `syschecks-linux-arm64` | Linux ARM64 | Most ARM64 systems | ARM servers (AWS Graviton, etc.) |
 | `syschecks-darwin-amd64` | macOS Intel | macOS 10.12+ | Intel Macs |
-| `syschecks-darwin-arm64` | macOS Apple Silicon | macOS 11+ | M1/M2 Macs |
-| `syschecks-windows-amd64.exe` | Windows x64 | Windows 7+ | Windows systems |
-| `syschecks-ubuntu18` | Linux x64 | Ubuntu 16.04+ | Max compatibility |
-| `syschecks-alpine` | Linux x64 | Any Linux | Minimal static |
+| `syschecks-darwin-arm64` | macOS Apple Silicon | macOS 11+ | M1/M2/M3 Macs |
+| `checksums-sha256.txt` | N/A | N/A | Verification checksums |
 
 ## 🔄 Release Workflow
 
 ### Manual Release Process
 
-1. **Test**: Ensure all tests pass
-2. **Build**: Test build locally with `./build-advanced.sh cross`
-3. **Version**: Decide on version number (semantic versioning)
-4. **Release**: Run `./release.sh <version>`
+1. **Update Changelog**: Add entry in `CHANGELOG.md` for the new version
+2. **Dry Run**: Test with `./release.sh -n X.Y.Z`
+3. **Review**: Check the summary output
+4. **Release**: Run `./release.sh X.Y.Z`
 5. **Verify**: Check the release on GitHub
 6. **Announce**: Update documentation, notify users
 
@@ -159,15 +169,33 @@ Each release includes multiple binary variants:
 3. **Wait**: GitHub Actions automatically builds and publishes
 4. **Verify**: Check the release was created successfully
 
-## 📝 Release Notes Template
+## 📝 Release Notes
 
-The scripts automatically generate release notes with:
+The release script automatically generates release notes with:
 
-- Feature highlights
-- Binary download links
-- Installation instructions
-- Usage examples
-- Checksum verification
+- Version-specific changes from CHANGELOG.md (if available)
+- Feature highlights (fallback if no changelog entry)
+- Binary download instructions for all platforms
+- Checksum verification commands
+- Quick start examples
+- Auto-install script link
+
+### Changelog Integration
+
+Create entries in `CHANGELOG.md` following this format:
+
+```markdown
+## [1.2.0] - 2026-01-15
+
+### Added
+- New feature X
+- Support for Y
+
+### Fixed
+- Bug in Z
+```
+
+The release script will automatically extract this section for release notes.
 
 ## 🛠 User Installation
 
@@ -192,45 +220,59 @@ curl -fsSL https://raw.githubusercontent.com/yaroslav-gwit/SysChecks_v2/main/aut
 
 - Install GitHub CLI: https://cli.github.com/
 
-**"curl: command not found"**
+**"Not authenticated with GitHub CLI"**
 
-- Install curl: `sudo apt install curl`
+- Run: `gh auth login`
 
-**"jq: command not found"**
+**"Invalid version format"**
 
-- Install jq: `sudo apt install jq`
+- Use semantic versioning: `1.0.0`, `1.0.0-beta.1`, `2.0.0-rc.1`
 
-**"Permission denied" during release**
+**"Tag already exists"**
 
-- Check GitHub token permissions
-- Ensure token has `repo` scope
+- Use `--force` to delete and recreate, or choose a different version
 
 **"Docker build failed"**
 
-- Ensure Docker is installed and running
-- Check Dockerfile syntax
+- Ensure Docker is installed and running: `docker info`
+- The script will fall back to native builds if Docker fails
+
+**"Permission denied" during Docker build**
+
+- The script uses `sudo` for Docker builds
+- Alternatively, add your user to the docker group
 
 ### Debugging
 
 ```bash
-# Test GitHub CLI authentication
+# Check GitHub CLI authentication
 gh auth status
 
-# Test API access
-curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user
+# Test dry run
+./release.sh -n -v 1.0.0
 
-# Test local build
-./build-advanced.sh docker ubuntu18
+# Verify local build works
+./build-advanced.sh native
 
-# Dry run release (API script)
-./release-api.sh 1.0.0-test --draft
+# Check existing releases
+gh release list --repo yaroslav-gwit/SysChecks_v2
+
+# Check existing tags
+git tag -l
 ```
 
 ## 📊 Best Practices
 
-1. **Version Numbers**: Use semantic versioning (1.0.0, 1.1.0, 2.0.0)
-2. **Testing**: Always test builds before releasing
-3. **Automation**: Use GitHub Actions for consistent releases
-4. **Documentation**: Keep release notes informative
-5. **Security**: Use environment variables for tokens
-6. **Backup**: Keep release scripts in version control
+1. **Update Changelog First**: Add entries to CHANGELOG.md before releasing
+2. **Dry Run**: Always test with `-n` flag first
+3. **Semantic Versioning**: Follow semver.org guidelines
+4. **Clean Working Tree**: Commit all changes before releasing
+5. **Test Locally**: Run `./build.sh` and test the binary before release
+6. **Monitor Issues**: Watch for bug reports after releasing
+
+## 🔗 Related Files
+
+- [CHANGELOG.md](CHANGELOG.md) - Version history and release notes
+- [build.sh](build.sh) - Simple build script
+- [build-advanced.sh](build-advanced.sh) - Advanced build with Docker/cross-compilation
+- [auto-install.sh](auto-install.sh) - User installation script

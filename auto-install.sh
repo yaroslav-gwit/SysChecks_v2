@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # SysChecks Auto-Installation Script
 # Automatically downloads and installs the latest release
@@ -7,8 +7,11 @@ set -e
 
 # Configuration
 REPO="yaroslav-gwit/SysChecks_v2"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="/opt/syschecks"
+BIN_LINK="/usr/bin/syschecks"
 BINARY_NAME="syschecks"
+REMOTE_BINARY_NAME="syschecks-linux-amd64"
+PACKAGE_LOCK_NAME="package.lock.json"
 
 # Colors
 RED='\033[0;31m'
@@ -17,204 +20,256 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-print_usage() {
-    echo "SysChecks Auto-Installation Script"
-    echo ""
-    echo "Usage: $0 [OPTIONS]"
-    echo ""
-    echo "Options:"
-    echo "  --version VERSION    Install specific version (e.g., 1.0.0)"
-    echo "  --dir DIR           Install to custom directory (default: $INSTALL_DIR)"
-    echo "  --variant VARIANT   Choose binary variant:"
-    echo "                        auto (default) - Auto-detect best variant"
-    echo "                        standard       - syschecks-linux-amd64"
-    echo "                        ubuntu18       - syschecks-ubuntu18"
-    echo "                        alpine         - syschecks-alpine"
-    echo "  --help              Show this help"
-    echo ""
-    echo "Examples:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/$REPO/main/auto-install.sh | bash"
-    echo "  $0 --version 1.0.0"
-    echo "  $0 --dir ~/.local/bin --variant alpine"
+# Check if running as root
+if [[ ${EUID} != 0 ]]; then
+    echo -e "${RED}Please run this script as root!${NC}"
+    exit 1
+fi
+
+print_info() {
+    echo -e "${BLUE}$1${NC}"
 }
 
-detect_os() {
-    local os=""
-    local arch=""
-    
-    # Detect OS
-    case "$(uname -s)" in
-        Linux*)  os="linux" ;;
-        Darwin*) os="darwin" ;;
-        CYGWIN*|MINGW*|MSYS*) os="windows" ;;
-        *) 
-            echo -e "${RED}Unsupported OS: $(uname -s)${NC}"
-            exit 1
-            ;;
-    esac
-    
-    # Detect architecture
-    case "$(uname -m)" in
-        x86_64|amd64) arch="amd64" ;;
-        arm64|aarch64) arch="arm64" ;;
-        i386|i686) arch="386" ;;
-        armv7l) arch="arm" ;;
-        *)
-            echo -e "${RED}Unsupported architecture: $(uname -m)${NC}"
-            exit 1
-            ;;
-    esac
-    
-    echo "$os-$arch"
+print_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}✗ $1${NC}"
 }
 
 get_latest_version() {
-    echo -e "${BLUE}Getting latest version...${NC}"
-    curl -s "https://api.github.com/repos/$REPO/releases/latest" | \
+    print_info "Getting latest version..."
+    local version
+    version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | \
         grep '"tag_name":' | \
-        sed -E 's/.*"v([^"]+)".*/\1/'
-}
-
-download_binary() {
-    local version="$1"
-    local variant="$2"
-    local binary_name=""
-    local download_url=""
+        sed -E 's/.*"v?([^"]+)".*/\1/')
     
-    case "$variant" in
-        "auto")
-            local platform
-            platform=$(detect_os)
-            binary_name="syschecks-$platform"
-            if [ "$platform" = "windows-amd64" ]; then
-                binary_name="$binary_name.exe"
-            fi
-            ;;
-        "standard")
-            binary_name="syschecks-linux-amd64"
-            ;;
-        "ubuntu18")
-            binary_name="syschecks-ubuntu18"
-            ;;
-        "alpine")
-            binary_name="syschecks-alpine"
-            ;;
-        *)
-            echo -e "${RED}Unknown variant: $variant${NC}"
-            exit 1
-            ;;
-    esac
-    
-    download_url="https://github.com/$REPO/releases/download/v$version/$binary_name"
-    
-    echo -e "${BLUE}Downloading $binary_name v$version...${NC}"
-    echo -e "${YELLOW}URL: $download_url${NC}"
-    
-    if ! curl -fsSL "$download_url" -o "/tmp/$binary_name"; then
-        echo -e "${RED}Failed to download binary${NC}"
-        echo "Please check if version $version exists and the binary is available"
+    if [ -z "$version" ]; then
+        print_error "Failed to get latest version from GitHub API"
         exit 1
     fi
     
-    echo "/tmp/$binary_name"
+    echo "$version"
+}
+
+check_existing_installation() {
+    if [ -f "$INSTALL_DIR/$PACKAGE_LOCK_NAME" ]; then
+        print_warning "Existing installation detected at $INSTALL_DIR"
+        print_info "Will update binary only and preserve your configuration"
+        return 0  # Existing installation
+    else
+        return 1  # New installation
+    fi
+}
+
+download_file() {
+    local url="$1"
+    local output="$2"
+    local description="$3"
+    
+    print_info "Downloading $description..."
+    if ! curl -fsSL "$url" -o "$output"; then
+        print_error "Failed to download $description"
+        print_error "URL: $url"
+        exit 1
+    fi
+    print_success "Downloaded $description"
 }
 
 install_binary() {
-    local temp_binary="$1"
-    local install_path="$INSTALL_DIR/$BINARY_NAME"
+    local version="$1"
+    local is_update="$2"
     
-    echo -e "${BLUE}Installing to $install_path...${NC}"
-    
-    # Create install directory if it doesn't exist
+    # Create installation directory if it doesn't exist
     if [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${YELLOW}Creating directory $INSTALL_DIR...${NC}"
-        sudo mkdir -p "$INSTALL_DIR"
+        print_info "Creating directory $INSTALL_DIR..."
+        mkdir -p "$INSTALL_DIR"
     fi
     
-    # Install binary
-    sudo cp "$temp_binary" "$install_path"
-    sudo chmod +x "$install_path"
+    # Download the binary
+    local binary_url="https://github.com/$REPO/releases/download/v$version/$REMOTE_BINARY_NAME"
+    local temp_binary="/tmp/$BINARY_NAME.$$"
+    download_file "$binary_url" "$temp_binary" "syschecks binary v$version"
     
-    # Cleanup
+    # Install binary to /opt/syschecks
+    print_info "Installing binary to $INSTALL_DIR/$BINARY_NAME..."
+    cp "$temp_binary" "$INSTALL_DIR/$BINARY_NAME"
+    chmod 0755 "$INSTALL_DIR/$BINARY_NAME"
+    chown root:root "$INSTALL_DIR/$BINARY_NAME"
     rm -f "$temp_binary"
+    print_success "Binary installed to $INSTALL_DIR/$BINARY_NAME"
     
-    echo -e "${GREEN}✓ Successfully installed $BINARY_NAME to $install_path${NC}"
+    # Create symlink or copy to /usr/bin
+    print_info "Linking binary to $BIN_LINK..."
+    if ln -sf "$INSTALL_DIR/$BINARY_NAME" "$BIN_LINK" 2>/dev/null; then
+        print_success "Symlink created: $BIN_LINK -> $INSTALL_DIR/$BINARY_NAME"
+    else
+        print_warning "Symlink failed, copying binary instead..."
+        cp "$INSTALL_DIR/$BINARY_NAME" "$BIN_LINK"
+        chmod 0755 "$BIN_LINK"
+        chown root:root "$BIN_LINK"
+        print_success "Binary copied to $BIN_LINK"
+    fi
+}
+
+install_package_lock() {
+    local version="$1"
+    local is_update="$2"
+    
+    if [ "$is_update" = "true" ]; then
+        # For updates, download as package.lock.latest.json
+        local lock_url="https://github.com/$REPO/releases/download/v$version/$PACKAGE_LOCK_NAME"
+        local lock_path="$INSTALL_DIR/package.lock.latest.json"
+        download_file "$lock_url" "$lock_path" "latest package lock (as package.lock.latest.json)"
+        chmod 0644 "$lock_path"
+        chown root:root "$lock_path"
+        print_success "Latest package lock saved to $lock_path"
+        print_warning "Your existing package.lock.json was preserved"
+        print_info "Review package.lock.latest.json and merge changes if needed"
+    else
+        # For new installations, download as package.lock.json
+        local lock_url="https://github.com/$REPO/releases/download/v$version/$PACKAGE_LOCK_NAME"
+        local lock_path="$INSTALL_DIR/$PACKAGE_LOCK_NAME"
+        download_file "$lock_url" "$lock_path" "package lock file"
+        chmod 0644 "$lock_path"
+        chown root:root "$lock_path"
+        print_success "Package lock installed to $lock_path"
+    fi
+}
+
+enable_bash_completion() {
+    # Check if bash-completion is available
+    if [ -d "/etc/bash_completion.d" ] || [ -d "/usr/share/bash-completion/completions" ]; then
+        print_info "Enabling bash completion..."
+        
+        # Try to generate completion
+        if command -v syschecks &> /dev/null; then
+            if syschecks completion bash > /etc/bash_completion.d/syschecks 2>/dev/null; then
+                chmod 0644 /etc/bash_completion.d/syschecks
+                print_success "Bash completion enabled"
+            else
+                print_warning "Could not generate bash completion (command may not support it yet)"
+            fi
+        else
+            print_warning "Could not enable bash completion (syschecks not in PATH yet)"
+        fi
+    else
+        print_info "Bash completion not available on this system (skipping)"
+    fi
+}
+
+setup_cron_jobs() {
+    print_info "Setting up cron jobs..."
+    
+    # Remove deprecated cron jobs
+    rm -f /etc/cron.d/automatic_system_updates_hold 2>/dev/null || true
+    rm -f /etc/cron.d/automatic_security_updates 2>/dev/null || true
+    rm -f /etc/cron.d/automatic_system_updates 2>/dev/null || true
+    rm -f /etc/cron.d/syschecks 2>/dev/null || true
+    
+    # Set up cache update cron
+    if command -v syschecks &> /dev/null; then
+        syschecks cron init 2>/dev/null || print_warning "Could not set up cache cron job"
+        
+        # Enable automatic security updates
+        syschecks cron updates --security 2>/dev/null || print_warning "Could not set up security updates cron"
+        
+        print_success "Cron jobs configured"
+    else
+        print_warning "Syschecks not available yet, skipping cron setup"
+    fi
+}
+
+create_initial_cache() {
+    print_info "Creating initial update cache..."
+    if command -v syschecks &> /dev/null; then
+        if syschecks updates --cache-create 2>/dev/null; then
+            print_success "Initial cache created"
+        else
+            print_warning "Could not create initial cache (this is normal on first install)"
+        fi
+    fi
 }
 
 verify_installation() {
-    echo -e "${BLUE}Verifying installation...${NC}"
+    print_info "Verifying installation..."
     
-    if command -v "$BINARY_NAME" &> /dev/null; then
+    if command -v syschecks &> /dev/null; then
         local version
-        version=$("$BINARY_NAME" version 2>/dev/null || echo "unknown")
-        echo -e "${GREEN}✓ $BINARY_NAME is installed and working${NC}"
-        echo -e "${BLUE}Version: $version${NC}"
-        
-        echo ""
-        echo -e "${GREEN}Usage examples:${NC}"
-        echo "  $BINARY_NAME kernel              # Check kernel status"
-        echo "  $BINARY_NAME cleanup --keep 4    # Clean old kernels"
-        echo "  $BINARY_NAME updates             # Check system updates"
-        echo "  $BINARY_NAME --help              # Show all commands"
+        version=$(syschecks version 2>/dev/null || echo "unknown")
+        print_success "syschecks is installed and working"
+        print_info "Installed version: $version"
+        return 0
     else
-        echo -e "${RED}✗ Installation verification failed${NC}"
-        echo "You may need to add $INSTALL_DIR to your PATH"
+        print_error "Installation verification failed"
+        print_error "syschecks is not in PATH"
         exit 1
     fi
 }
 
-# Parse arguments
-VERSION=""
-VARIANT="auto"
-
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --version)
-            VERSION="$2"
-            shift 2
-            ;;
-        --dir)
-            INSTALL_DIR="$2"
-            shift 2
-            ;;
-        --variant)
-            VARIANT="$2"
-            shift 2
-            ;;
-        --help|-h)
-            print_usage
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}Unknown option: $1${NC}"
-            print_usage
-            exit 1
-            ;;
-    esac
-done
+show_usage() {
+    echo ""
+    echo -e "${GREEN}Installation completed successfully! 🎉${NC}"
+    echo ""
+    echo -e "${BLUE}Usage examples:${NC}"
+    echo "  syschecks version              # Show version"
+    echo "  syschecks kernel               # Check kernel reboot status"
+    echo "  syschecks kernel cleanup       # Clean up old kernels"
+    echo "  syschecks updates              # Check for updates"
+    echo "  syschecks banner               # Display system banner"
+    echo "  syschecks --help               # Show all commands"
+    echo ""
+    echo -e "${BLUE}To display banner on SSH login, run:${NC}"
+    echo "  echo '([ -z \"\$PS1\" ] && true) || syschecks banner' >> /etc/profile.d/syschecks_banner.sh && chmod 0755 /etc/profile.d/syschecks_banner.sh"
+    echo ""
+}
 
 # Main execution
-echo -e "${GREEN}SysChecks Auto-Installation Script${NC}"
+echo -e "${GREEN}╔═══════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║  SysChecks Auto-Installation Script      ║${NC}"
+echo -e "${GREEN}╚═══════════════════════════════════════════╝${NC}"
 echo ""
 
-# Get version if not specified
-if [ -z "$VERSION" ]; then
-    VERSION=$(get_latest_version)
-    if [ -z "$VERSION" ]; then
-        echo -e "${RED}Failed to get latest version${NC}"
-        exit 1
-    fi
+# Check for existing installation
+IS_UPDATE="false"
+if check_existing_installation; then
+    IS_UPDATE="true"
 fi
 
-echo -e "${BLUE}Installing SysChecks v$VERSION...${NC}"
-echo -e "${BLUE}Variant: $VARIANT${NC}"
-echo -e "${BLUE}Install directory: $INSTALL_DIR${NC}"
+# Get latest version
+VERSION=$(get_latest_version)
+print_info "Latest version: v$VERSION"
 echo ""
 
-# Download and install
-TEMP_BINARY=$(download_binary "$VERSION" "$VARIANT")
-install_binary "$TEMP_BINARY"
+# Install binary
+install_binary "$VERSION" "$IS_UPDATE"
+
+# Install or update package lock
+install_package_lock "$VERSION" "$IS_UPDATE"
+
+# Set correct ownership and permissions for install directory
+chown -R root:root "$INSTALL_DIR"
+chmod 0755 "$INSTALL_DIR"
+
+# Enable bash completion
+enable_bash_completion
+
+# Only set up cron jobs on new installations
+if [ "$IS_UPDATE" = "false" ]; then
+    setup_cron_jobs
+    create_initial_cache
+else
+    print_info "Skipping cron setup (update mode - preserving existing configuration)"
+fi
+
+# Verify installation
+echo ""
 verify_installation
 
-echo ""
-echo -e "${GREEN}🎉 Installation completed successfully!${NC}"
+# Show usage information
+show_usage

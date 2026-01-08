@@ -26,9 +26,21 @@ SysChecks v2 is a Go-based CLI tool for Linux system administration, primarily e
 # Docker-based build (for portable binaries)
 ./docker-build.sh
 
-# Create a release
-./release.sh <version>
+# Create a release (with dry-run first)
+./release.sh -n 1.0.0    # Dry run
+./release.sh 1.0.0       # Actual release
+./release.sh -f 1.0.0    # Skip confirmations
 ```
+
+### Release Script Options
+
+| Option | Description |
+|--------|-------------|
+| `-n, --dry-run` | Simulate release without changes |
+| `-f, --force` | Skip confirmation prompts |
+| `-s, --skip-build` | Use existing binaries |
+| `-t, --skip-tests` | Skip running tests |
+| `-v, --verbose` | Enable verbose output |
 
 ## Project Structure
 
@@ -50,8 +62,8 @@ SysChecks v2 is a Go-based CLI tool for Linux system administration, primarily e
 │   ├── templates.go      # Cron job templates
 │   └── zabbixInit.go     # Zabbix config modification
 ├── bin/                 # Compiled binaries
-├── shell/               # Legacy shell scripts (deprecated)
-└── Dockerfile*          # Various Docker build configurations
+├── docker/              # Docker build configurations and docs
+└── shell/               # Legacy shell scripts (deprecated)
 ```
 
 ## Key Commands

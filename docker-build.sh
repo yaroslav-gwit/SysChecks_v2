@@ -12,7 +12,7 @@ COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE=$(date -u '+%Y-%m-%d_%H:%M:%S_UTC')
 
 # Build the Docker image
-docker build -t syschecks-builder \
+docker build -f docker/Dockerfile -t syschecks-builder \
     --build-arg VERSION="$VERSION" \
     --build-arg GIT_COMMIT="$COMMIT" \
     --build-arg BUILD_DATE="$DATE" \

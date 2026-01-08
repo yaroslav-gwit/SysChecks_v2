@@ -4,12 +4,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
+	"os"
 	"regexp"
 	"strings"
 
 	"github.com/facette/natsort"
 	"github.com/spf13/cobra"
+)
+
+// Pre-compiled regex patterns for kernel operations (compiled once at package init)
+var (
+	// Kernel version cleanup patterns
+	reElCleanup = regexp.MustCompile(`\.el[789].*`)
+
+	// Kernel type detection
+	reOemMatch = regexp.MustCompile(`-oem`)
+
+	// Boot file patterns
+	reVmlinuz      = regexp.MustCompile(`^vmlinuz-(.+)$`)
+	reRescueKernel = regexp.MustCompile(`rescue`)
+	reSystemMap    = regexp.MustCompile(`^System\.map-`)
+	reConfig       = regexp.MustCompile(`^config-`)
+	reInitrd       = regexp.MustCompile(`^initrd\.img`)
+	reRetpoline    = regexp.MustCompile(`^retpoline-`)
 )
 
 var (
@@ -43,36 +60,35 @@ var (
 )
 
 func kernel() {
+	output := kernelJsonOutput()
+
+	var jsonOut []byte
+	var err error
+
 	if kernelJsonPretty {
-		jsonMarshalIndent, err := json.MarshalIndent(kernelJsonOutput(), "", "   ")
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(string(jsonMarshalIndent))
+		jsonOut, err = json.MarshalIndent(output, "", "   ")
 	} else {
-		jsonMarshal, err := json.Marshal(kernelJsonOutput())
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(string(jsonMarshal))
+		jsonOut, err = json.Marshal(output)
 	}
+
+	if err != nil {
+		log.Fatalf("Error marshaling kernel output: %v", err)
+	}
+	fmt.Println(string(jsonOut))
 }
 
+// getRunningKernel reads the running kernel version from /proc/version
+// This is faster than spawning uname -r
 func getRunningKernel() string {
-	app := "uname"
-	arg0 := "-r"
-
-	cmd := exec.Command(app, arg0)
-	stdout, err := cmd.Output()
+	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Could not read kernel version: %v", err)
 	}
-	result := strings.TrimSpace(string(stdout))
 
-	cleanupRepl1, _ := regexp.Compile(`\.el7.*`)
-	cleanupRepl2, _ := regexp.Compile(`\.el8.*`)
-	result = cleanupRepl1.ReplaceAllString(result, "")
-	result = cleanupRepl2.ReplaceAllString(result, "")
+	result := strings.TrimSpace(string(data))
+
+	// Clean up RHEL-style suffixes
+	result = reElCleanup.ReplaceAllString(result, "")
 
 	return result
 }
@@ -82,53 +98,57 @@ type installedKernelsStruct struct {
 	oemKernels     []string
 }
 
+// getInstalledKernels uses native Go directory reading instead of spawning ls
 func getInstalledKernels() installedKernelsStruct {
-	app := "ls"
-	arg0 := "-1"
-	arg1 := "/boot/"
-	cmd := exec.Command(app, arg0, arg1)
-	stdout, err := cmd.Output()
+	entries, err := os.ReadDir("/boot")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Could not read /boot directory: %v", err)
 	}
-	dirtyList := strings.Split(string(stdout), "\n")
 
-	vmlinuzMatch, _ := regexp.Compile(`vmlinuz-.*`)
-	oemMatch, _ := regexp.Compile(`.*-oem.*`)
-	vmlinuzRepl, _ := regexp.Compile(`vmlinuz-`)
-	cleanupRepl1, _ := regexp.Compile(`\.el7.*`)
-	cleanupRepl2, _ := regexp.Compile(`\.el8.*`)
-	cleanupIgnore1, _ := regexp.Compile(`.*0-rescue.*`)
+	var genericKernels []string
+	var oemKernels []string
 
-	oemContinue1 := regexp.MustCompile(`System.map-.*`)
-	oemContinue2 := regexp.MustCompile(`config-.*`)
-	oemContinue3 := regexp.MustCompile(`initrd.img.*`)
-	oemContinue4 := regexp.MustCompile(`retpoline-.*`)
+	for _, entry := range entries {
+		name := entry.Name()
 
-	var genericResult []string
-	var oemResult []string
-	for _, v := range dirtyList {
-		if cleanupIgnore1.MatchString(v) {
+		// Skip non-vmlinuz files
+		matches := reVmlinuz.FindStringSubmatch(name)
+		if len(matches) < 2 {
 			continue
-		} else if oemMatch.MatchString(v) {
-			if oemContinue1.MatchString(v) || oemContinue2.MatchString(v) || oemContinue3.MatchString(v) || oemContinue4.MatchString(v) {
-				continue
-			}
-			temp := vmlinuzRepl.ReplaceAllString(v, "")
-			oemResult = append(oemResult, temp)
-		} else if vmlinuzMatch.MatchString(v) {
-			temp := vmlinuzRepl.ReplaceAllString(v, "")
-			temp = cleanupRepl1.ReplaceAllString(temp, "")
-			temp = cleanupRepl2.ReplaceAllString(temp, "")
-			genericResult = append(genericResult, temp)
+		}
+
+		version := matches[1]
+
+		// Skip rescue kernels
+		if reRescueKernel.MatchString(version) {
+			continue
+		}
+
+		// Skip auxiliary files
+		if reSystemMap.MatchString(name) || reConfig.MatchString(name) ||
+			reInitrd.MatchString(name) || reRetpoline.MatchString(name) {
+			continue
+		}
+
+		// Clean up RHEL-style suffixes
+		version = reElCleanup.ReplaceAllString(version, "")
+
+		// Categorize as OEM or generic
+		if reOemMatch.MatchString(version) {
+			oemKernels = append(oemKernels, version)
+		} else {
+			genericKernels = append(genericKernels, version)
 		}
 	}
-	natsort.Sort(genericResult)
-	natsort.Sort(oemResult)
-	finalResult := installedKernelsStruct{}
-	finalResult.genericKernels = genericResult
-	finalResult.oemKernels = oemResult
-	return finalResult
+
+	// Natural sort for proper version ordering
+	natsort.Sort(genericKernels)
+	natsort.Sort(oemKernels)
+
+	return installedKernelsStruct{
+		genericKernels: genericKernels,
+		oemKernels:     oemKernels,
+	}
 }
 
 type compareKernelsStruct struct {
@@ -139,28 +159,32 @@ type compareKernelsStruct struct {
 }
 
 func compareKernels() compareKernelsStruct {
-	oemMatch, _ := regexp.Compile(`.*-oem.*`)
-
 	runningKernel := getRunningKernel()
 	allKernels := getInstalledKernels()
-	genericKernels := allKernels.genericKernels
-	oemKernels := allKernels.oemKernels
 
+	// Select kernel list based on running kernel type
 	var activeKernels []string
-	if oemMatch.MatchString(runningKernel) {
-		activeKernels = oemKernels
+	if reOemMatch.MatchString(runningKernel) {
+		activeKernels = allKernels.oemKernels
 	} else {
-		activeKernels = genericKernels
+		activeKernels = allKernels.genericKernels
 	}
-	result := compareKernelsStruct{}
-	result.activeKernels = activeKernels
-	result.runningKernel = runningKernel
-	result.latestInstalledKernel = activeKernels[len(activeKernels)-1]
-	if runningKernel == result.latestInstalledKernel {
+
+	result := compareKernelsStruct{
+		runningKernel: runningKernel,
+		activeKernels: activeKernels,
+	}
+
+	// Handle edge case: no kernels found
+	if len(activeKernels) == 0 {
+		result.latestInstalledKernel = runningKernel
 		result.kernelNeedsReboot = false
-	} else {
-		result.kernelNeedsReboot = true
+		return result
 	}
+
+	result.latestInstalledKernel = activeKernels[len(activeKernels)-1]
+	result.kernelNeedsReboot = runningKernel != result.latestInstalledKernel
+
 	return result
 }
 
@@ -173,12 +197,12 @@ type kernelJsonOutputStruct struct {
 
 func kernelJsonOutput() kernelJsonOutputStruct {
 	input := compareKernels()
-	result := kernelJsonOutputStruct{}
-	result.KernelNeedsReboot = input.kernelNeedsReboot
-	result.RunningKernel = input.runningKernel
-	result.LatestInstalledKernel = input.latestInstalledKernel
-	result.ListOfInstalledKernels = input.activeKernels
-	return result
+	return kernelJsonOutputStruct{
+		KernelNeedsReboot:      input.kernelNeedsReboot,
+		RunningKernel:          input.runningKernel,
+		LatestInstalledKernel:  input.latestInstalledKernel,
+		ListOfInstalledKernels: input.activeKernels,
+	}
 }
 
 // kernelCleanupAction generates cleanup commands for old kernel packages
@@ -187,10 +211,8 @@ func kernelCleanupAction() {
 	runningKernel := getRunningKernel()
 	allKernels := getInstalledKernels()
 
-	oemMatch, _ := regexp.Compile(`.*-oem.*`)
-
 	var activeKernels []string
-	if oemMatch.MatchString(runningKernel) {
+	if reOemMatch.MatchString(runningKernel) {
 		activeKernels = allKernels.oemKernels
 	} else {
 		activeKernels = allKernels.genericKernels
@@ -216,16 +238,13 @@ func kernelCleanupAction() {
 	}
 
 	fmt.Println("# Run the following commands to clean up old kernels:")
-	for i := range cleanupCommands {
-		fmt.Printf("%s\n", cleanupCommands[i])
-		fmt.Println()
+	for _, cmd := range cleanupCommands {
+		fmt.Printf("%s\n\n", cmd)
 	}
 }
 
 // getOldKernels returns a list of old kernels that can be removed, keeping the specified number of kernels
 func getOldKernels(runningKernel string, installedKernels []string, numberToKeep int) []string {
-	var oldKernels []string
-
 	// Ensure we keep at least the running kernel
 	if numberToKeep < 1 {
 		numberToKeep = 1
@@ -233,11 +252,11 @@ func getOldKernels(runningKernel string, installedKernels []string, numberToKeep
 
 	// If we have fewer or equal kernels than we want to keep, return empty list
 	if len(installedKernels) <= numberToKeep {
-		return oldKernels
+		return nil
 	}
 
 	// Create a map to track which kernels to keep
-	kernelsToKeep := make(map[string]bool)
+	kernelsToKeep := make(map[string]bool, numberToKeep)
 
 	// Always keep the running kernel
 	kernelsToKeep[runningKernel] = true
@@ -252,7 +271,8 @@ func getOldKernels(runningKernel string, installedKernels []string, numberToKeep
 		}
 	}
 
-	// Add kernels that are not in the "keep" list to the old kernels list
+	// Collect kernels that are not in the "keep" list
+	oldKernels := make([]string, 0, len(installedKernels)-numberToKeep)
 	for _, kernel := range installedKernels {
 		if !kernelsToKeep[kernel] {
 			oldKernels = append(oldKernels, kernel)
@@ -267,25 +287,19 @@ func generateCleanupCommands(oldKernels []string, osType detectOsStruct) []strin
 	var commands []string
 
 	if osType.deb {
-		// For Debian/Ubuntu systems
 		packages := getDebianKernelPackages(oldKernels)
 		if len(packages) > 0 {
-			cmd := "sudo apt purge -y " + strings.Join(packages, " ")
-			commands = append(commands, cmd)
+			commands = append(commands, "sudo apt purge -y "+strings.Join(packages, " "))
 		}
 	} else if osType.dnf {
-		// For RHEL/Fedora/AlmaLinux systems with dnf
 		packages := getRHELKernelPackages(oldKernels)
 		if len(packages) > 0 {
-			cmd := "sudo dnf remove -y " + strings.Join(packages, " ")
-			commands = append(commands, cmd)
+			commands = append(commands, "sudo dnf remove -y "+strings.Join(packages, " "))
 		}
 	} else if osType.yum {
-		// For CentOS systems with yum
 		packages := getRHELKernelPackages(oldKernels)
 		if len(packages) > 0 {
-			cmd := "sudo yum remove -y " + strings.Join(packages, " ")
-			commands = append(commands, cmd)
+			commands = append(commands, "sudo yum remove -y "+strings.Join(packages, " "))
 		}
 	}
 
@@ -294,21 +308,16 @@ func generateCleanupCommands(oldKernels []string, osType detectOsStruct) []strin
 
 // getDebianKernelPackages maps kernel versions to Debian package names
 func getDebianKernelPackages(kernelVersions []string) []string {
-	var packages []string
+	packages := make([]string, 0, len(kernelVersions)*4)
 
 	for _, version := range kernelVersions {
-		// Check if it's an OEM kernel
-		oemMatch, _ := regexp.Compile(`.*-oem.*`)
-		if oemMatch.MatchString(version) {
-			// OEM kernel packages
-			packages = append(packages, "linux-image-"+version)
-			packages = append(packages, "linux-headers-"+version)
-			packages = append(packages, "linux-modules-"+version)
-		} else {
-			// Generic kernel packages
-			packages = append(packages, "linux-image-"+version)
-			packages = append(packages, "linux-headers-"+version)
-			packages = append(packages, "linux-modules-"+version)
+		packages = append(packages,
+			"linux-image-"+version,
+			"linux-headers-"+version,
+			"linux-modules-"+version,
+		)
+		// Only add extra modules for non-OEM kernels
+		if !reOemMatch.MatchString(version) {
 			packages = append(packages, "linux-modules-extra-"+version)
 		}
 	}
@@ -318,13 +327,14 @@ func getDebianKernelPackages(kernelVersions []string) []string {
 
 // getRHELKernelPackages maps kernel versions to RHEL-based package names
 func getRHELKernelPackages(kernelVersions []string) []string {
-	var packages []string
+	packages := make([]string, 0, len(kernelVersions)*3)
 
 	for _, version := range kernelVersions {
-		// For RHEL-based systems, kernel packages are typically named kernel-<version>
-		packages = append(packages, "kernel-"+version)
-		packages = append(packages, "kernel-devel-"+version)
-		packages = append(packages, "kernel-headers-"+version)
+		packages = append(packages,
+			"kernel-"+version,
+			"kernel-devel-"+version,
+			"kernel-headers-"+version,
+		)
 	}
 
 	return packages

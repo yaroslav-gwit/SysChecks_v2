@@ -47,20 +47,20 @@ print_usage() {
 
 build_docker() {
     local base_image="${1:-ubuntu18}"
-    local dockerfile="Dockerfile"
+    local dockerfile="docker/Dockerfile"
     local image_name="syschecks-builder"
     
     case "$base_image" in
         "ubuntu18")
-            dockerfile="Dockerfile"
+            dockerfile="docker/Dockerfile"
             echo -e "${BLUE}Building with Docker (Ubuntu 18.04 LTS - glibc 2.27)...${NC}"
             ;;
         "debian11")
-            dockerfile="Dockerfile.debian11"
+            dockerfile="docker/Dockerfile.debian11"
             echo -e "${BLUE}Building with Docker (Debian 11 Bullseye - glibc 2.31)...${NC}"
             ;;
         "alpine")
-            dockerfile="Dockerfile.alpine"
+            dockerfile="docker/Dockerfile.alpine"
             echo -e "${BLUE}Building with Docker (Alpine Linux - musl libc)...${NC}"
             ;;
         *)

@@ -177,11 +177,11 @@ cmd/loginBanner.go: showLoginBanner()
 
 | Path | Purpose | Created By |
 |------|---------|------------|
-| `/opt/syschecks/` | Installation directory | install.sh |
-| `/opt/syschecks/package.lock.json` | Package exclusion list | install.sh |
-| `/bin/syschecks` | Binary location | install.sh |
+| `/opt/syschecks/` | Installation directory | auto-install.sh |
+| `/opt/syschecks/package.lock.json` | Package exclusion list | auto-install.sh |
+| `/bin/syschecks` | Binary location | auto-install.sh |
 | `/tmp/syscheck_updates.json` | Update cache | `updates --cache-create` |
 | `/etc/cron.d/syschecks_*` | Cron job files | `cron` commands |
 | `/etc/zabbix/zabbix_agentd.conf` | Zabbix config | `zabbix init` |
-| `/etc/bash_completion.d/syschecks` | Bash completion | install.sh |
+| `/etc/bash_completion.d/syschecks` | Bash completion | auto-install.sh |
 | `/var/log/syschecks_updates.log` | Update log | Cron jobs |

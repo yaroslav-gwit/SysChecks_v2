@@ -45,7 +45,7 @@ Creates `./bin/syschecks` with version info from git.
 ./docker-build.sh
 ```
 
-Uses Ubuntu 18.04 base for maximum glibc compatibility.
+Uses Ubuntu 18.04 base for maximum glibc compatibility. All Docker-related files are in the `docker/` directory.
 
 ### Manual Build with Version Info
 

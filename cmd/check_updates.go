@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,11 +10,47 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"syschecks/helpers"
 	"time"
 
 	"github.com/briandowns/spinner"
 	"github.com/spf13/cobra"
+)
+
+// Pre-compiled regex patterns for update checking (compiled once at package init)
+var (
+	// DNF/YUM patterns
+	reMultiSpace       = regexp.MustCompile(`\s+`)
+	reSecReplace       = regexp.MustCompile(`.*/Sec\.\s*`)
+	reMetaDataContinue = regexp.MustCompile(`Last\s+metadata`)
+	reKernelContinue   = regexp.MustCompile(`Security:\s+kernel-core`)
+	reObsoleteBreak    = regexp.MustCompile(`Obsoleting\s+Packages`)
+	reSrcMatch         = regexp.MustCompile(`\.src$`)
+	reRHSAReplace      = regexp.MustCompile(`^RHSA-\d+:\d+.*?\.`)
+
+	// Skip patterns for DNF/YUM
+	reSubscriptionMgmt = regexp.MustCompile(`Updating\s+Subscription\s+Management`)
+	reSecurityPrefix   = regexp.MustCompile(`^Security:\s+`)
+
+	// YUM-specific continue patterns
+	reLoadedPlugins  = regexp.MustCompile(`Loaded plugins:`)
+	reUpdateInfoDone = regexp.MustCompile(`updateinfo list done`)
+	reManagerComma   = regexp.MustCompile(`: manager,`)
+	reNotRegistered  = regexp.MustCompile(`This system is not registered`)
+	reVersionLock    = regexp.MustCompile(`:\s*versionlock`)
+	reSubMgr         = regexp.MustCompile(`: subscription-manager`)
+	reMgrVersionLock = regexp.MustCompile(`: manager, versionlock`)
+
+	// APT patterns
+	reMatchSysUpdate = regexp.MustCompile(`^Inst\s+`)
+	reMatchSecUpdate = regexp.MustCompile(`security`)
+)
+
+// OS detection cache
+var (
+	cachedOsType *detectOsStruct
+	osDetectOnce sync.Once
 )
 
 var (
@@ -33,30 +71,35 @@ var (
 func checkUpdates(cacheCreate bool, cacheUse bool, jsonPretty bool) {
 	if cacheCreate {
 		helpers.RootUserCheck()
-		jsonOut, err := json.Marshal(systemUpdates(false))
+		result := systemUpdates(false)
+		jsonOut, err := json.Marshal(result)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("Error marshaling updates: %v", err)
 		}
+
 		cacheFileLocation := "/tmp/syscheck_updates.json"
-		writeErr := os.WriteFile(cacheFileLocation, jsonOut, 0644)
-		if writeErr != nil {
-			log.Fatal(err)
+		if err := os.WriteFile(cacheFileLocation, jsonOut, 0644); err != nil {
+			log.Fatalf("Error writing cache file: %v", err)
 		}
-		// Hardened systems need the `chmod` command applied, so that regular users can read the cache file
-		_ = exec.Command("chmod", "0644", cacheFileLocation).Run()
-	} else if jsonPretty {
-		jsonOutIndent, err := json.MarshalIndent(systemUpdates(updatesCacheUse), "", "   ")
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(string(jsonOutIndent))
-	} else if cacheUse {
-		jsonOut, err := json.Marshal(systemUpdates(updatesCacheUse))
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(string(jsonOut))
+		// Ensure file is readable by all users on hardened systems
+		_ = os.Chmod(cacheFileLocation, 0644)
+		return
 	}
+
+	result := systemUpdates(cacheUse)
+	var jsonOut []byte
+	var err error
+
+	if jsonPretty {
+		jsonOut, err = json.MarshalIndent(result, "", "   ")
+	} else {
+		jsonOut, err = json.Marshal(result)
+	}
+
+	if err != nil {
+		log.Fatalf("Error marshaling updates: %v", err)
+	}
+	fmt.Println(string(jsonOut))
 }
 
 type detectOsStruct struct {
@@ -64,40 +107,46 @@ type detectOsStruct struct {
 	dnf         bool
 	yum         bool
 	unsupported bool
+	osID        string
 }
 
+// detectOs identifies the Linux distribution and returns cached result on subsequent calls
 func detectOs() detectOsStruct {
-	data, err := os.ReadFile("/etc/os-release")
+	osDetectOnce.Do(func() {
+		cachedOsType = detectOsUncached()
+	})
+	return *cachedOsType
+}
+
+// detectOsUncached performs the actual OS detection
+func detectOsUncached() *detectOsStruct {
+	osStruct := &detectOsStruct{}
+
+	file, err := os.Open("/etc/os-release")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Could not read /etc/os-release: %v", err)
 	}
+	defer file.Close()
 
-	osReleaseFile := string(data)
-	reIdMatch, _ := regexp.Compile(`^ID=.*`)
-	reIdStrip, _ := regexp.Compile(`^ID=`)
-	reQuoteStrip, _ := regexp.Compile(`"`)
-	var osType string
-	osStruct := detectOsStruct{deb: false, yum: false, dnf: false, unsupported: false}
-
-	for _, item := range strings.Split(osReleaseFile, "\n") {
-		if reIdMatch.MatchString(item) {
-			osType = reIdStrip.ReplaceAllString(item, "")
-			osType = reQuoteStrip.ReplaceAllString(osType, "")
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "ID=") {
+			osStruct.osID = strings.Trim(strings.TrimPrefix(line, "ID="), `"`)
+			break
 		}
 	}
 
-	if osType == "ubuntu" || osType == "pop" || osType == "debian" {
+	switch osStruct.osID {
+	case "ubuntu", "pop", "debian", "linuxmint":
 		osStruct.deb = true
-	} else if osType == "centos" {
+	case "centos":
 		osStruct.yum = true
-	} else if osType == "almalinux" || osType == "ol" || osType == "rocky" || osType == "rhel" {
+	case "almalinux", "ol", "rocky", "rhel", "fedora":
 		osStruct.dnf = true
-	} else {
+	default:
 		osStruct.unsupported = true
-	}
-
-	if osStruct.unsupported {
-		log.Fatalf("Sorry, this OS (%s) is not yet supported!", osType)
+		log.Fatalf("Sorry, this OS (%s) is not yet supported!", osStruct.osID)
 	}
 
 	return osStruct
@@ -112,415 +161,281 @@ type systemUpdatesStruct struct {
 	securityUpdatesList      []string
 }
 
+// runCommandWithTimeout executes a command with a context timeout
+func runCommandWithTimeout(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.Output()
+}
+
+// runCommandWithTimeoutCombined executes a command and returns combined stdout/stderr
+func runCommandWithTimeoutCombined(ctx context.Context, name string, args ...string) ([]byte, int, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	exitCode := 0
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+	return out, exitCode, err
+}
+
 func dnfCheck() systemUpdatesStruct {
 	helpers.RootUserCheck()
 
-	startTheSpinner := spinner.New(spinner.CharSets[14], 100*time.Millisecond, spinner.WithSuffix(" Running DNF related procedures"))
-	startTheSpinner.Prefix = " "
-	startTheSpinner.Start()
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond, spinner.WithSuffix(" Running DNF related procedures"))
+	s.Prefix = " "
+	s.Start()
+	defer s.Stop()
 
-	result := systemUpdatesStruct{}
-	var allUpdates []string
-	var allUpdatesDirty []string
-	var securityUpdates []string
-	var securityUpdatesDirty []string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	result := systemUpdatesStruct{
+		systemUpdatesList:   []string{},
+		securityUpdatesList: []string{},
+	}
 
 	// DNF cache refresh
-	// Full command: dnf makecache
-	// dnfCacheCommand := "dnf"
-	// dnfCacheCommandArg0 := "makecache"
-	cmd := exec.Command("dnf", "makecache")
-	_, err := cmd.Output()
-	if err != nil {
-		if cmd.ProcessState.ExitCode() == 100 {
-			// DNF exit code will be 100 when there are updates available and a list of the updates will be printed, 0 if not and 1 if an error occurs
-			_ = 0
-		} else {
-			log.Fatal("DNF cache update error: ", err)
+	if _, _, err := runCommandWithTimeoutCombined(ctx, "dnf", "makecache"); err != nil {
+		// Exit code 100 means updates available, which is fine
+		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 100 {
+			log.Printf("Warning: DNF cache update: %v", err)
 		}
 	}
 
-	// DNF System updates check
-	// Full command: dnf --cacheonly check-update
-	// dnfSystemCommand := "dnf"
-	// dnfSystemCommandArg0 := "--cacheonly"
-	// dnfSystemCommandArg1 := "check-update"
-	cmd = exec.Command("dnf", "--cacheonly", "check-update")
-	dnfSystemCommandStdout, err := cmd.Output()
-	if err != nil {
-		if cmd.ProcessState.ExitCode() == 100 {
-			// DNF exit code will be 100 when there are updates available and a list of the updates will be printed, 0 if not and 1 if an error occurs
-			_ = 0
-		} else {
-			log.Fatal("DNF system updates error: ", err)
-		}
-	}
+	// Check system updates
+	sysOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "check-update")
 
-	// DNF Security updates check
-	// This is the previous command, but it's harder to parse the output
-	// Full command: dnf --cacheonly updateinfo list updates security
-	// cmd = exec.Command("dnf", "--cacheonly", "updateinfo", "list", "updates", "security")
+	// Check security updates
+	secOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "check-update", "--security")
 
-	// Full command: dnf --cacheonly check-update --security
-	cmd = exec.Command("dnf", "--cacheonly", "check-update", "--security")
-	dnfSecurityCommandStdout, err := cmd.Output()
-	if err != nil {
-		if cmd.ProcessState.ExitCode() == 100 {
-			// DNF exit code will be 100 when there are updates available and a list of the updates will be printed, 0 if not and 1 if an error occurs
-			_ = 0
-		} else {
-			log.Fatal("DNF security updates error: ", err)
-		}
-	}
+	// Parse system updates
+	result.systemUpdatesList = parseDnfOutput(string(sysOut), false)
+	result.securityUpdatesList = parseDnfOutput(string(secOut), true)
 
-	// Split the output of the DNF system updates into slices
-	for _, v := range strings.Split(string(dnfSystemCommandStdout), "\n") {
-		v = strings.TrimSpace(v)
-		if len(v) > 0 {
-			allUpdatesDirty = append(allUpdatesDirty, v)
-		}
-	}
-	// Split the output of the DNF security updates into slices
-	for _, v := range strings.Split(string(dnfSecurityCommandStdout), "\n") {
-		v = strings.TrimSpace(v)
-		if len(v) > 0 {
-			securityUpdatesDirty = append(securityUpdatesDirty, v)
-		}
-	}
+	result.numberOfSystemUpdates = len(result.systemUpdatesList)
+	result.numberOfSecurityUpdates = len(result.securityUpdatesList)
+	result.systemUpdatesAvailable = result.numberOfSystemUpdates > 0
+	result.securityUpdatesAvailable = result.numberOfSecurityUpdates > 0
 
-	reMultiSpaceReplace, _ := regexp.Compile(`\s+`)
-	reSecReplace, _ := regexp.Compile(`.*/Sec.\s+`)
-	reMetaDataContinue, _ := regexp.Compile(`Last\s+metadata`)
-	reKernelContinue, _ := regexp.Compile(`Security:\s+kernel-core`)
-	reObsoleteBreak, _ := regexp.Compile(`Obsoleting\s+Packages`)
-	reSrcMatch, _ := regexp.Compile(`.*\.src$`)
+	return result
+}
 
-	// List of regex patterns
-	skipPatterns := []string{
-		`Updating\s+Subscription\s+Management`,
-		`^Security:\s+`,
-	}
-	// Compile the regex patterns and store them in a slice
-	var skipRegexes []*regexp.Regexp
-	for _, pattern := range skipPatterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			log.Fatalf("Error compiling regex %q: %v\n", pattern, err)
-		}
-		skipRegexes = append(skipRegexes, re)
-	}
+// parseDnfOutput parses DNF check-update output
+func parseDnfOutput(output string, isSecurity bool) []string {
+	var updates []string
 
-	// List of regex patterns
-	replacePatterns := []string{
-		`^RHSA-\d+:\d+.*?\.`,
-	}
-	// Compile the regex patterns and store them in a slice
-	var replaceRegexes []*regexp.Regexp
-	for _, pattern := range replacePatterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			log.Fatalf("Error compiling regex %q: %v\n", pattern, err)
-		}
-		replaceRegexes = append(replaceRegexes, re)
-	}
-
-OUTER:
-	for _, v := range allUpdatesDirty {
-		v = reMultiSpaceReplace.ReplaceAllString(v, " ")
-		v = strings.ReplaceAll(v, " baseos ", "")
-		v = strings.ReplaceAll(v, " appstream ", "")
-		v = strings.ReplaceAll(v, " epel ", "")
-		v = strings.ReplaceAll(v, " epel-source ", "")
-		v = reMultiSpaceReplace.ReplaceAllString(v, " ")
-
-		if reMetaDataContinue.MatchString(v) || reKernelContinue.MatchString(v) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) == 0 {
 			continue
-		} else if reObsoleteBreak.MatchString(v) {
+		}
+
+		// Skip metadata and informational lines
+		if reMetaDataContinue.MatchString(line) || reKernelContinue.MatchString(line) {
+			continue
+		}
+		if reObsoleteBreak.MatchString(line) {
 			break
 		}
-
-		for _, re := range skipRegexes {
-			if re.MatchString(v) {
-				continue OUTER
-			}
-		}
-
-		if len(v) > 0 {
-			if reSrcMatch.MatchString(strings.TrimSpace(strings.Split(v, " ")[0])) {
-				continue
-			} else {
-				allUpdates = append(allUpdates, strings.TrimSpace(v))
-			}
-		}
-	}
-
-OUTER_SEC:
-	for _, v := range securityUpdatesDirty {
-		v = reMultiSpaceReplace.ReplaceAllString(v, " ")
-		v = reSecReplace.ReplaceAllString(v, "")
-		if reMetaDataContinue.MatchString(v) {
+		if reSubscriptionMgmt.MatchString(line) || reSecurityPrefix.MatchString(line) {
 			continue
 		}
 
-		for _, re := range skipRegexes {
-			if re.MatchString(v) {
-				continue OUTER_SEC
-			}
+		// Clean up the line
+		line = reMultiSpace.ReplaceAllString(line, " ")
+		line = strings.ReplaceAll(line, " baseos ", "")
+		line = strings.ReplaceAll(line, " appstream ", "")
+		line = strings.ReplaceAll(line, " epel ", "")
+		line = strings.ReplaceAll(line, " epel-source ", "")
+		line = reMultiSpace.ReplaceAllString(line, " ")
+
+		if isSecurity {
+			line = reSecReplace.ReplaceAllString(line, "")
+			line = reRHSAReplace.ReplaceAllString(line, "")
 		}
 
-		if len(v) > 0 {
-			for _, re := range replaceRegexes {
-				v = re.ReplaceAllString(v, "")
-			}
-			securityUpdates = append(securityUpdates, v)
+		// Skip source packages
+		parts := strings.Fields(line)
+		if len(parts) > 0 && reSrcMatch.MatchString(parts[0]) {
+			continue
+		}
+
+		line = strings.TrimSpace(line)
+		if len(line) > 0 {
+			updates = append(updates, line)
 		}
 	}
 
-	if len(allUpdates) > 0 {
-		result.numberOfSystemUpdates = len(allUpdates)
-		result.systemUpdatesAvailable = true
-		result.systemUpdatesList = allUpdates
-	} else {
-		result.numberOfSystemUpdates = 0
-		result.systemUpdatesAvailable = false
-		result.systemUpdatesList = []string{}
-	}
-
-	if len(securityUpdates) > 0 {
-		result.numberOfSecurityUpdates = len(securityUpdates)
-		result.securityUpdatesAvailable = true
-		result.securityUpdatesList = securityUpdates
-	} else {
-		result.numberOfSecurityUpdates = 0
-		result.securityUpdatesAvailable = false
-		result.securityUpdatesList = []string{}
-	}
-
-	startTheSpinner.Stop()
-	return result
+	return updates
 }
 
 func debCheck() systemUpdatesStruct {
 	helpers.RootUserCheck()
 
-	startTheSpinner := spinner.New(spinner.CharSets[14], 100*time.Millisecond, spinner.WithSuffix(" Running APT related procedures"))
-	startTheSpinner.Prefix = " "
-	startTheSpinner.Start()
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond, spinner.WithSuffix(" Running APT related procedures"))
+	s.Prefix = " "
+	s.Start()
+	defer s.Stop()
 
-	result := systemUpdatesStruct{}
-	var allUpdates []string
-	var allUpdatesDirty []string
-	var securityUpdates []string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	result := systemUpdatesStruct{
+		systemUpdatesList:   []string{},
+		securityUpdatesList: []string{},
+	}
 
 	// APT cache refresh
-	// Full command: apt-get -y update
-	aptCmd := "apt-get"
-	aptArg0 := "-y"
-	aptArg1 := "update"
-	aptUpdateOutput, err := exec.Command(aptCmd, aptArg0, aptArg1).CombinedOutput()
-	if err != nil {
-		errorValue := strings.TrimSpace(string(aptUpdateOutput))
-		if string(errorValue[len(errorValue)-1]) != "." {
-			errorValue = errorValue + "."
-		}
-
-		errorCodeSplit := strings.Split(err.Error(), " ")
-		errorCode := errorCodeSplit[len(errorCodeSplit)-1]
-
-		if errorCode == "100" {
-			_ = 0
-		} else {
-			log.Fatal("APT cache update error: " + errorValue + " Exit code: " + errorCode + ".")
-		}
+	if out, exitCode, err := runCommandWithTimeoutCombined(ctx, "apt-get", "-y", "update"); err != nil && exitCode != 100 {
+		errorValue := strings.TrimSpace(string(out))
+		log.Printf("Warning: APT cache update: %s (exit code: %d)", errorValue, exitCode)
 	}
 
-	// APT ALL updates check
-	// Full command: apt-get dist-upgrade -s
-	aptCmd = "apt"
-	aptArg0 = "dist-upgrade"
-	aptArg1 = "-s"
-	aptSysStdout, err := exec.Command(aptCmd, aptArg0, aptArg1).CombinedOutput()
+	// Check all updates using simulation mode
+	sysOut, _, err := runCommandWithTimeoutCombined(ctx, "apt", "dist-upgrade", "-s")
 	if err != nil {
-		errorValue := strings.TrimSpace(string(aptSysStdout))
-		if string(errorValue[len(errorValue)-1]) != "." {
-			errorValue = errorValue + "."
-		}
-		errorCodeSplit := strings.Split(err.Error(), " ")
-		errorCode := errorCodeSplit[len(errorCodeSplit)-1]
-		log.Fatal("APT get all updates list error: " + errorValue + " Exit code: " + errorCode + ".")
+		log.Printf("Warning: APT dist-upgrade simulation failed: %v", err)
+		return result
 	}
 
-	allUpdatesDirty = strings.Split(string(aptSysStdout), "\n")
-	reMatchSysUpdate := regexp.MustCompile(`.*Inst.*`)
-	reMatchSecUpdate := regexp.MustCompile(`.*security.*`)
+	// Parse APT output
+	for _, line := range strings.Split(string(sysOut), "\n") {
+		if !reMatchSysUpdate.MatchString(line) {
+			continue
+		}
 
-	for _, v := range allUpdatesDirty {
-		if reMatchSysUpdate.MatchString(v) {
-			v = strings.ReplaceAll(v, "Inst ", "")
-			v = strings.ReplaceAll(v, " []", "")
-			v = strings.TrimSpace(v)
-			allUpdates = append(allUpdates, v)
-			if reMatchSecUpdate.MatchString(v) {
-				securityUpdates = append(securityUpdates, v)
+		// Clean up line: "Inst package (version repo)" -> "package (version repo)"
+		line = reMatchSysUpdate.ReplaceAllString(line, "")
+		line = strings.ReplaceAll(line, " []", "")
+		line = strings.TrimSpace(line)
+
+		if len(line) > 0 {
+			result.systemUpdatesList = append(result.systemUpdatesList, line)
+			if reMatchSecUpdate.MatchString(line) {
+				result.securityUpdatesList = append(result.securityUpdatesList, line)
 			}
 		}
 	}
 
-	if len(allUpdates) > 0 {
-		result.numberOfSystemUpdates = len(allUpdates)
-		result.systemUpdatesAvailable = true
-		result.systemUpdatesList = allUpdates
-	} else {
-		result.numberOfSystemUpdates = 0
-		result.systemUpdatesAvailable = false
-		result.systemUpdatesList = []string{}
-	}
+	result.numberOfSystemUpdates = len(result.systemUpdatesList)
+	result.numberOfSecurityUpdates = len(result.securityUpdatesList)
+	result.systemUpdatesAvailable = result.numberOfSystemUpdates > 0
+	result.securityUpdatesAvailable = result.numberOfSecurityUpdates > 0
 
-	if len(securityUpdates) > 0 {
-		result.numberOfSecurityUpdates = len(securityUpdates)
-		result.securityUpdatesAvailable = true
-		result.securityUpdatesList = securityUpdates
-	} else {
-		result.numberOfSecurityUpdates = 0
-		result.securityUpdatesAvailable = false
-		result.securityUpdatesList = []string{}
-	}
-
-	startTheSpinner.Stop()
 	return result
 }
 
 func yumCheck() systemUpdatesStruct {
 	helpers.RootUserCheck()
 
-	startTheSpinner := spinner.New(spinner.CharSets[14], 100*time.Millisecond, spinner.WithSuffix(" Running YUM related procedures"))
-	startTheSpinner.Prefix = " "
-	startTheSpinner.Start()
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond, spinner.WithSuffix(" Running YUM related procedures"))
+	s.Prefix = " "
+	s.Start()
+	defer s.Stop()
 
-	result := systemUpdatesStruct{}
-	var allUpdates []string
-	var allUpdatesDirty []string
-	var securityUpdates []string
-	var securityUpdatesDirty []string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	result := systemUpdatesStruct{
+		systemUpdatesList:   []string{},
+		securityUpdatesList: []string{},
+	}
 
 	// YUM cache refresh
-	// Full command: yum makecache fast
-	yumCmd := "yum"
-	yumAgr0 := "makecache"
-	yumAgr1 := "fast"
-	cmd := exec.Command(yumCmd, yumAgr0, yumAgr1)
-	_, err := cmd.Output()
-	if err != nil {
-		if cmd.ProcessState.ExitCode() == 100 {
-			// YUM exit code will be 100 when there are updates available and a list of the updates will be printed, 0 if not and 1 if an error occurs
-			_ = 0
-		} else {
-			log.Fatal("YUM cache update error: ", err)
-		}
+	if _, _, err := runCommandWithTimeoutCombined(ctx, "yum", "makecache", "fast"); err != nil {
+		log.Printf("Warning: YUM cache update: %v", err)
 	}
 
-	// YUM System updates check
-	// Full command: yum --cacheonly check-update
-	yumCmd = "yum"
-	yumAgr0 = "--cacheonly"
-	yumAgr1 = "check-update"
-	cmd = exec.Command(yumCmd, yumAgr0, yumAgr1)
-	yumSysStdout, err := cmd.Output()
-	if err != nil {
-		if cmd.ProcessState.ExitCode() == 100 {
-			// YUM exit code will be 100 when there are updates available and a list of the updates will be printed, 0 if not and 1 if an error occurs
-			_ = 0
-		} else {
-			log.Fatal("YUM system updates error: ", err)
-		}
-	}
+	// Check system updates
+	sysOut, _, _ := runCommandWithTimeoutCombined(ctx, "yum", "--cacheonly", "check-update")
 
-	// YUM Security updates check
-	// Full command: yum --cacheonly updateinfo list updates security
-	yumCmd = "yum"
-	yumAgr0 = "--cacheonly"
-	yumAgr1 = "updateinfo"
-	yumAgr2 := "list"
-	yumAgr3 := "updates"
-	yumAgr4 := "security"
-	cmd = exec.Command(yumCmd, yumAgr0, yumAgr1, yumAgr2, yumAgr3, yumAgr4)
-	yumSecStdout, err := cmd.Output()
-	if err != nil {
-		if cmd.ProcessState.ExitCode() == 100 {
-			// YUM exit code will be 100 when there are updates available and a list of the updates will be printed, 0 if not and 1 if an error occurs
-			_ = 0
-		} else {
-			log.Fatal("YUM security updates error: ", err)
-		}
-	}
+	// Check security updates
+	secOut, _, _ := runCommandWithTimeoutCombined(ctx, "yum", "--cacheonly", "updateinfo", "list", "updates", "security")
 
-	allUpdatesDirty = strings.Split(string(yumSysStdout), "\n")
-	securityUpdatesDirty = strings.Split(string(yumSecStdout), "\n")
+	// Parse system updates
+	result.systemUpdatesList = parseYumOutput(string(sysOut))
+	result.securityUpdatesList = parseYumSecurityOutput(string(secOut))
 
-	reMultiSpaceReplace, _ := regexp.Compile(`\s{2,}`)
-	reSecReplace, _ := regexp.Compile(`.*/Sec.\s`)
+	result.numberOfSystemUpdates = len(result.systemUpdatesList)
+	result.numberOfSecurityUpdates = len(result.securityUpdatesList)
+	result.systemUpdatesAvailable = result.numberOfSystemUpdates > 0
+	result.securityUpdatesAvailable = result.numberOfSecurityUpdates > 0
 
-	reObsoleteBreak, _ := regexp.Compile(`.*Obsoleting Packages.*`)
+	return result
+}
 
-	reContinue1 := regexp.MustCompile(`Loaded plugins: `)
-	reContinue2 := regexp.MustCompile(`updateinfo list done`)
-	reContinue3 := regexp.MustCompile(`: manager,`)
-	reContinue4 := regexp.MustCompile(`This system is not registered`)
-	reContinue5 := regexp.MustCompile(`\s:\sversionlock`)
-	reContinue6 := regexp.MustCompile(`Last metadata expiration check`)
-	reContinue7 := regexp.MustCompile(`.*: subscription-manager.*`)
-	reContinue8 := regexp.MustCompile(`.*: manager, versionlock.*`)
-	reContinue9, _ := regexp.Compile(`.*: versionlock.*`)
+// parseYumOutput parses YUM check-update output
+func parseYumOutput(output string) []string {
+	var updates []string
 
-	for _, v := range allUpdatesDirty {
-		v = reMultiSpaceReplace.ReplaceAllString(v, " ")
-		v = strings.ReplaceAll(v, " baseos ", "")
-		v = strings.ReplaceAll(v, " appstream ", "")
-		v = strings.ReplaceAll(v, " epel ", "")
-		v = strings.ReplaceAll(v, " epel-source", "")
-		if reContinue1.MatchString(v) || reContinue2.MatchString(v) || reContinue3.MatchString(v) || reContinue4.MatchString(v) || reContinue5.MatchString(v) || reContinue6.MatchString(v) || reContinue7.MatchString(v) || reContinue8.MatchString(v) || reContinue9.MatchString(v) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) == 0 {
 			continue
-		} else if reObsoleteBreak.MatchString(v) {
+		}
+
+		// Skip informational lines
+		if shouldSkipYumLine(line) {
+			continue
+		}
+		if reObsoleteBreak.MatchString(line) {
 			break
 		}
-		if len(v) > 0 {
-			allUpdates = append(allUpdates, strings.TrimSpace(v))
+
+		// Clean up the line
+		line = reMultiSpace.ReplaceAllString(line, " ")
+		line = strings.ReplaceAll(line, " baseos ", "")
+		line = strings.ReplaceAll(line, " appstream ", "")
+		line = strings.ReplaceAll(line, " epel ", "")
+		line = strings.ReplaceAll(line, " epel-source", "")
+
+		line = strings.TrimSpace(line)
+		if len(line) > 0 {
+			updates = append(updates, line)
 		}
 	}
 
-	for _, v := range securityUpdatesDirty {
-		v = reMultiSpaceReplace.ReplaceAllString(v, "")
-		v = reSecReplace.ReplaceAllString(v, "")
-		if reContinue1.MatchString(v) || reContinue2.MatchString(v) || reContinue3.MatchString(v) || reContinue4.MatchString(v) || reContinue5.MatchString(v) || reContinue6.MatchString(v) || reContinue7.MatchString(v) || reContinue8.MatchString(v) || reContinue9.MatchString(v) {
+	return updates
+}
+
+// parseYumSecurityOutput parses YUM security updateinfo output
+func parseYumSecurityOutput(output string) []string {
+	var updates []string
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) == 0 {
 			continue
 		}
-		if len(v) > 0 {
-			securityUpdates = append(securityUpdates, strings.TrimSpace(v))
+
+		// Skip informational lines
+		if shouldSkipYumLine(line) {
+			continue
+		}
+
+		// Clean up the line
+		line = reMultiSpace.ReplaceAllString(line, "")
+		line = reSecReplace.ReplaceAllString(line, "")
+
+		line = strings.TrimSpace(line)
+		if len(line) > 0 {
+			updates = append(updates, line)
 		}
 	}
 
-	if len(allUpdates) > 0 {
-		result.numberOfSystemUpdates = len(allUpdates)
-		result.systemUpdatesAvailable = true
-		result.systemUpdatesList = allUpdates
-	} else {
-		result.numberOfSystemUpdates = 0
-		result.systemUpdatesAvailable = false
-		result.systemUpdatesList = []string{}
-	}
+	return updates
+}
 
-	if len(securityUpdates) > 0 {
-		result.numberOfSecurityUpdates = len(securityUpdates)
-		result.securityUpdatesAvailable = true
-		result.securityUpdatesList = securityUpdates
-	} else {
-		result.numberOfSecurityUpdates = 0
-		result.securityUpdatesAvailable = false
-		result.securityUpdatesList = []string{}
-	}
-
-	startTheSpinner.Stop()
-	return result
+// shouldSkipYumLine checks if a YUM output line should be skipped
+func shouldSkipYumLine(line string) bool {
+	return reLoadedPlugins.MatchString(line) ||
+		reUpdateInfoDone.MatchString(line) ||
+		reManagerComma.MatchString(line) ||
+		reNotRegistered.MatchString(line) ||
+		reVersionLock.MatchString(line) ||
+		reMetaDataContinue.MatchString(line) ||
+		reSubMgr.MatchString(line) ||
+		reMgrVersionLock.MatchString(line)
 }
 
 type systemUpdatesJsonStruct struct {
@@ -536,65 +451,71 @@ type systemUpdatesJsonStruct struct {
 }
 
 func systemUpdates(useCache bool) systemUpdatesJsonStruct {
-	systemUpdatesInput := systemUpdatesStruct{}
-	systemUpdatesOutput := systemUpdatesJsonStruct{}
-	osType := detectOs()
 	if useCache {
 		return readCache()
-	} else if osType.dnf {
-		systemUpdatesInput = dnfCheck()
-	} else if osType.deb {
-		systemUpdatesInput = debCheck()
-	} else if osType.yum {
-		systemUpdatesInput = yumCheck()
-	} else {
+	}
+
+	osType := detectOs()
+	var input systemUpdatesStruct
+
+	switch {
+	case osType.dnf:
+		input = dnfCheck()
+	case osType.deb:
+		input = debCheck()
+	case osType.yum:
+		input = yumCheck()
+	default:
 		log.Fatal("Sorry, but your OS is not yet supported!")
 	}
 
-	systemUpdatesOutput.CacheExists = false
-	systemUpdatesOutput.CacheUpToDate = false
-
-	systemUpdatesOutput.NumberOfSystemUpdates = systemUpdatesInput.numberOfSystemUpdates
-	systemUpdatesOutput.NumberOfSecurityUpdates = systemUpdatesInput.numberOfSecurityUpdates
-
-	systemUpdatesOutput.SystemUpdatesAvailable = systemUpdatesInput.systemUpdatesAvailable
-	systemUpdatesOutput.SecurityUpdatesAvailable = systemUpdatesInput.securityUpdatesAvailable
-
-	systemUpdatesOutput.SystemUpdatesList = systemUpdatesInput.systemUpdatesList
-	systemUpdatesOutput.SecurityUpdatesList = systemUpdatesInput.securityUpdatesList
-
-	return systemUpdatesOutput
+	return systemUpdatesJsonStruct{
+		NumberOfSystemUpdates:    input.numberOfSystemUpdates,
+		NumberOfSecurityUpdates:  input.numberOfSecurityUpdates,
+		SystemUpdatesAvailable:   input.systemUpdatesAvailable,
+		SecurityUpdatesAvailable: input.securityUpdatesAvailable,
+		SystemUpdatesList:        input.systemUpdatesList,
+		SecurityUpdatesList:      input.securityUpdatesList,
+		CacheExists:              false,
+		CacheUpToDate:            false,
+	}
 }
 
 func readCache() systemUpdatesJsonStruct {
-	jsonOutput := systemUpdatesJsonStruct{}
-	jsonFile := "/tmp/syscheck_updates.json"
-	data, err := os.ReadFile(jsonFile)
+	const cacheFile = "/tmp/syscheck_updates.json"
+
+	result := systemUpdatesJsonStruct{
+		SystemUpdatesList:   []string{},
+		SecurityUpdatesList: []string{},
+	}
+
+	data, err := os.ReadFile(cacheFile)
 	if err != nil {
-		jsonOutput.CacheDateCreated = time.Now().Add(-(time.Hour * 48)).Format("2006-01-02 15:04:05")
-		jsonOutput.CacheExists = false
-		jsonOutput.CacheUpToDate = false
-		return jsonOutput
+		// Cache doesn't exist, return empty result with stale date
+		result.CacheDateCreated = time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+		result.CacheExists = false
+		result.CacheUpToDate = false
+		return result
 	}
 
-	jsonError := json.Unmarshal(data, &jsonOutput)
-	if jsonError != nil {
-		log.Fatal(jsonError)
+	if err := json.Unmarshal(data, &result); err != nil {
+		log.Printf("Warning: Could not parse cache file: %v", err)
+		result.CacheExists = false
+		result.CacheUpToDate = false
+		return result
 	}
 
-	file, err := os.Stat(jsonFile)
+	// Get file modification time
+	fileInfo, err := os.Stat(cacheFile)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Warning: Could not stat cache file: %v", err)
+		return result
 	}
 
-	jsonOutput.CacheDateCreated = file.ModTime().Format("2006-01-02 15:04:05")
-	jsonOutput.CacheExists = true
+	modTime := fileInfo.ModTime()
+	result.CacheDateCreated = modTime.Format("2006-01-02 15:04:05")
+	result.CacheExists = true
+	result.CacheUpToDate = modTime.Add(12 * time.Hour).After(time.Now())
 
-	if file.ModTime().Add(time.Hour * 12).After(time.Now()) {
-		jsonOutput.CacheUpToDate = true
-	} else {
-		jsonOutput.CacheUpToDate = false
-	}
-
-	return jsonOutput
+	return result
 }
