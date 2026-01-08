@@ -26,6 +26,21 @@ if [[ ${EUID} != 0 ]]; then
     exit 1
 fi
 
+# Check for required tools
+if ! command -v curl &> /dev/null; then
+    echo -e "${RED}curl is required but not installed. Please install it first.${NC}"
+    exit 1
+fi
+
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}jq is required but not installed.${NC}"
+    echo -e "${YELLOW}Install it with:${NC}"
+    echo "  Ubuntu/Debian: sudo apt install jq"
+    echo "  RHEL/CentOS:   sudo yum install jq"
+    echo "  Alpine:        sudo apk add jq"
+    exit 1
+fi
+
 print_info() {
     echo -e "${BLUE}$1${NC}" >&2
 }
@@ -46,10 +61,10 @@ get_latest_version() {
     print_info "Getting latest version..."
     local version
     version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | \
-        grep '"tag_name":' | \
-        sed -E 's/.*"v?([^"]+)".*/\1/')
+        jq -r '.tag_name' | \
+        sed 's/^v//')
     
-    if [ -z "$version" ]; then
+    if [ -z "$version" ] || [ "$version" = "null" ]; then
         print_error "Failed to get latest version from GitHub API"
         exit 1
     fi
