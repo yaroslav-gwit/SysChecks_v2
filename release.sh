@@ -583,6 +583,10 @@ create_release() {
 upload_binaries_to_existing() {
     local version="$1"
     
+    if [ -z "$version" ]; then
+        die "Version parameter is required for upload_binaries_to_existing"
+    fi
+    
     log_step "Uploading Binaries to Existing Release"
     
     if [ "$DRY_RUN" = true ]; then
