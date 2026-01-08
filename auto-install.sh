@@ -27,19 +27,19 @@ if [[ ${EUID} != 0 ]]; then
 fi
 
 print_info() {
-    echo -e "${BLUE}$1${NC}"
+    echo -e "${BLUE}$1${NC}" >&2
 }
 
 print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
+    echo -e "${GREEN}✓ $1${NC}" >&2
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
+    echo -e "${YELLOW}⚠ $1${NC}" >&2
 }
 
 print_error() {
-    echo -e "${RED}✗ $1${NC}"
+    echo -e "${RED}✗ $1${NC}" >&2
 }
 
 get_latest_version() {
