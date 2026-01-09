@@ -271,6 +271,31 @@ BANNER_EOF
     print_info "Banner will show on next SSH login"
 }
 
+setup_zabbix_integration() {
+    print_info "Checking for Zabbix Agent..."
+    
+    # Check for Zabbix config files (locations supported by syschecks)
+    if [ -f "/etc/zabbix/zabbix_agentd.conf" ] || [ -f "/etc/zabbix_agentd.conf" ]; then
+        print_info "Zabbix configuration found, enabling integration..."
+        
+        if command -v syschecks &> /dev/null; then
+            if syschecks zabbix init 2>/dev/null; then
+                print_success "Zabbix integration activated"
+                
+                # Attempt to restart Zabbix agent to apply changes
+                if command -v systemctl &> /dev/null; then
+                    print_info "Restarting Zabbix agent..."
+                    systemctl try-restart zabbix-agent zabbix-agent2 2>/dev/null || true
+                fi
+            else
+                print_warning "Failed to activate Zabbix integration"
+            fi
+        fi
+    else
+        print_info "Zabbix agent config not found (skipping integration)"
+    fi
+}
+
 verify_installation() {
     print_info "Verifying installation..."
     
@@ -360,6 +385,7 @@ if [ "$IS_UPDATE" = "false" ]; then
     setup_cron_jobs
     create_initial_cache
     setup_login_banner
+    setup_zabbix_integration
 else
     print_info "Skipping cron setup (update mode - preserving existing configuration)"
 fi
