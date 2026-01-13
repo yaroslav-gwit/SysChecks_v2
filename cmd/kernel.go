@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -288,6 +289,7 @@ func generateCleanupCommands(oldKernels []string, osType detectOsStruct) []strin
 
 	if osType.deb {
 		packages := getDebianKernelPackages(oldKernels)
+		packages = filterInstalledPackages(packages, osType)
 		if len(packages) > 0 {
 			commands = append(commands, "sudo apt purge -y "+strings.Join(packages, " "))
 		}
@@ -338,4 +340,34 @@ func getRHELKernelPackages(kernelVersions []string) []string {
 	}
 
 	return packages
+}
+
+// filterInstalledPackages keeps only packages that are actually installed
+func filterInstalledPackages(packages []string, osType detectOsStruct) []string {
+	if !osType.deb {
+		return packages
+	}
+
+	installed := make(map[string]bool)
+	cmd := exec.Command("dpkg-query", "-W", "-f=${Package}\n")
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("Warning: Failed to list installed packages: %v", err)
+		return packages
+	}
+
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if line != "" {
+			installed[line] = true
+		}
+	}
+
+	var valid []string
+	for _, pkg := range packages {
+		if installed[pkg] {
+			valid = append(valid, pkg)
+		}
+	}
+	return valid
 }
