@@ -288,8 +288,7 @@ func generateCleanupCommands(oldKernels []string, osType detectOsStruct) []strin
 	var commands []string
 
 	if osType.deb {
-		packages := getDebianKernelPackages(oldKernels)
-		packages = filterInstalledPackages(packages, osType)
+		packages := findDebianPackagesToRemove(oldKernels)
 		if len(packages) > 0 {
 			commands = append(commands, "sudo apt purge -y "+strings.Join(packages, " "))
 		}
@@ -308,23 +307,59 @@ func generateCleanupCommands(oldKernels []string, osType detectOsStruct) []strin
 	return commands
 }
 
-// getDebianKernelPackages maps kernel versions to Debian package names
-func getDebianKernelPackages(kernelVersions []string) []string {
-	packages := make([]string, 0, len(kernelVersions)*4)
+// findDebianPackagesToRemove finds installed packages matching the old kernel versions
+// supporting both standard Debian/Ubuntu and Proxmox package naming
+func findDebianPackagesToRemove(versions []string) []string {
+	// Get all installed packages
+	cmd := exec.Command("dpkg-query", "-W", "-f=${Package}\n")
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("Warning: Failed to list installed packages: %v", err)
+		return nil
+	}
 
-	for _, version := range kernelVersions {
-		packages = append(packages,
-			"linux-image-"+version,
-			"linux-headers-"+version,
-			"linux-modules-"+version,
-		)
-		// Only add extra modules for non-OEM kernels
-		if !reOemMatch.MatchString(version) {
-			packages = append(packages, "linux-modules-extra-"+version)
+	installedSet := make(map[string]bool)
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if line != "" {
+			installedSet[line] = true
 		}
 	}
 
-	return packages
+	var packagesToRemove []string
+	// Prefixes for kernel packages (Standard Debian/Ubuntu and Proxmox)
+	prefixes := []string{
+		"linux-image-",
+		"linux-headers-",
+		"linux-modules-",
+		"linux-modules-extra-",
+		"pve-kernel-",      // Old Proxmox
+		"pve-headers-",     // Old Proxmox
+		"proxmox-kernel-",  // New Proxmox
+		"proxmox-headers-", // New Proxmox
+	}
+
+	for pkgName := range installedSet {
+		for _, version := range versions {
+			matched := false
+			for _, prefix := range prefixes {
+				// Check if package starts with a valid prefix AND contains the specific version string
+				if strings.HasPrefix(pkgName, prefix) && strings.Contains(pkgName, version) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				packagesToRemove = append(packagesToRemove, pkgName)
+				break
+			}
+		}
+	}
+
+	// Sort explicitly to output deterministic lists
+	natsort.Sort(packagesToRemove)
+
+	return packagesToRemove
 }
 
 // getRHELKernelPackages maps kernel versions to RHEL-based package names
@@ -340,34 +375,4 @@ func getRHELKernelPackages(kernelVersions []string) []string {
 	}
 
 	return packages
-}
-
-// filterInstalledPackages keeps only packages that are actually installed
-func filterInstalledPackages(packages []string, osType detectOsStruct) []string {
-	if !osType.deb {
-		return packages
-	}
-
-	installed := make(map[string]bool)
-	cmd := exec.Command("dpkg-query", "-W", "-f=${Package}\n")
-	out, err := cmd.Output()
-	if err != nil {
-		log.Printf("Warning: Failed to list installed packages: %v", err)
-		return packages
-	}
-
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
-		if line != "" {
-			installed[line] = true
-		}
-	}
-
-	var valid []string
-	for _, pkg := range packages {
-		if installed[pkg] {
-			valid = append(valid, pkg)
-		}
-	}
-	return valid
 }
