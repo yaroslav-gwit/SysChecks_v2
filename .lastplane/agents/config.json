@@ -1,0 +1,19 @@
+{
+  "agents": [
+    {
+      "id": "claude",
+      "name": "Claude",
+      "command": "claude"
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "command": "codex"
+    },
+    {
+      "id": "shell",
+      "name": "Shell",
+      "command": ""
+    }
+  ]
+}

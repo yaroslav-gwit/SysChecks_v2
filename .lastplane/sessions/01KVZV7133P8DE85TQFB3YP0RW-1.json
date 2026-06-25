@@ -1,0 +1,10 @@
+{
+  "id": "01KVZV7133P8DE85TQFB3YP0RW-1",
+  "task_id": "01KVZV7133P8DE85TQFB3YP0RW",
+  "tab_id": "01KVZV7133P8DE85TQFB3YP0RW-1",
+  "tmux_session": "01KVZV7133P8DE85TQFB3YP0RW-1",
+  "agent": "shell",
+  "started_at": "2026-06-25T16:53:44.2655351Z",
+  "stopped_at": "0001-01-01T00:00:00Z",
+  "running": true
+}

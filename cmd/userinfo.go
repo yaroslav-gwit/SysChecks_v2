@@ -1,25 +1,461 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 var (
+	userinfoJSON       bool
+	userinfoJSONPretty bool
+	userinfoAllUsers   bool
+
 	userinfoCmd = &cobra.Command{
 		Use:   "userinfo",
-		Short: "List system users",
-		Long:  `List system users`,
+		Short: "List real system users",
+		Long:  `List real system users, active login state, password lock state, and last login source.`,
 		Run: func(cmd *cobra.Command, args []string) {
-			usersMap := []map[string]string{}
-			jsonData, err := json.Marshal(usersMap)
-			if err != nil {
-				log.Fatal("Error marshaling data to JSON:", err)
+			users := collectUserInfo(userinfoAllUsers)
+
+			if userinfoJSON || userinfoJSONPretty {
+				var jsonData []byte
+				var err error
+				if userinfoJSONPretty {
+					jsonData, err = json.MarshalIndent(users, "", "   ")
+				} else {
+					jsonData, err = json.Marshal(users)
+				}
+				if err != nil {
+					log.Fatal("Error marshaling data to JSON:", err)
+				}
+				fmt.Println(string(jsonData))
+				return
 			}
-			fmt.Println(string(jsonData))
+
+			printUserInfoTable(users)
 		},
 	}
 )
+
+type userInfoRecord struct {
+	Username       string `json:"username"`
+	UID            int    `json:"uid"`
+	GID            int    `json:"gid"`
+	FullName       string `json:"full_name,omitempty"`
+	Home           string `json:"home"`
+	Shell          string `json:"shell"`
+	Active         bool   `json:"active"`
+	ActiveSessions int    `json:"active_sessions"`
+	ActiveSources  string `json:"active_sources,omitempty"`
+	PasswordStatus string `json:"password_status"`
+	PasswordLocked *bool  `json:"password_locked,omitempty"`
+	LastLogin      string `json:"last_login"`
+	LastTTY        string `json:"last_tty,omitempty"`
+	LastSource     string `json:"last_source"`
+}
+
+type passwdEntry struct {
+	username string
+	uid      int
+	gid      int
+	fullName string
+	home     string
+	shell    string
+}
+
+type loginEntry struct {
+	when   string
+	tty    string
+	host   string
+	source string
+}
+
+type loginDefRange struct {
+	uidMin int
+	uidMax int
+}
+
+func collectUserInfo(includeAll bool) []userInfoRecord {
+	passwdEntries := readPasswdEntries("/etc/passwd")
+	uidRange := readLoginDefRange("/etc/login.defs")
+	shadowStatuses := readShadowStatuses("/etc/shadow")
+	activeSessions := readActiveSessions()
+
+	records := make([]userInfoRecord, 0, len(passwdEntries))
+	for _, entry := range passwdEntries {
+		if !includeAll && !isRealUser(entry, uidRange) {
+			continue
+		}
+
+		lastLogin := lastLoginForUser(entry.username)
+		passwordStatus, passwordLocked := passwordStatusForUser(entry.username, shadowStatuses)
+		activeSources := activeSessions[entry.username]
+
+		records = append(records, userInfoRecord{
+			Username:       entry.username,
+			UID:            entry.uid,
+			GID:            entry.gid,
+			FullName:       entry.fullName,
+			Home:           entry.home,
+			Shell:          entry.shell,
+			Active:         len(activeSources) > 0,
+			ActiveSessions: len(activeSources),
+			ActiveSources:  strings.Join(activeSources, ", "),
+			PasswordStatus: passwordStatus,
+			PasswordLocked: passwordLocked,
+			LastLogin:      lastLogin.when,
+			LastTTY:        lastLogin.tty,
+			LastSource:     lastLogin.source,
+		})
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].UID == records[j].UID {
+			return records[i].Username < records[j].Username
+		}
+		return records[i].UID < records[j].UID
+	})
+
+	return records
+}
+
+func readPasswdEntries(path string) []passwdEntry {
+	file, err := os.Open(path)
+	if err != nil {
+		log.Printf("Warning: could not read %s: %v", path, err)
+		return nil
+	}
+	defer file.Close()
+
+	var entries []passwdEntry
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.Split(line, ":")
+		if len(parts) < 7 {
+			continue
+		}
+
+		uid, err := strconv.Atoi(parts[2])
+		if err != nil {
+			continue
+		}
+		gid, err := strconv.Atoi(parts[3])
+		if err != nil {
+			continue
+		}
+
+		entries = append(entries, passwdEntry{
+			username: parts[0],
+			uid:      uid,
+			gid:      gid,
+			fullName: strings.Split(parts[4], ",")[0],
+			home:     parts[5],
+			shell:    parts[6],
+		})
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("Warning: could not scan %s: %v", path, err)
+	}
+
+	return entries
+}
+
+func readLoginDefRange(path string) loginDefRange {
+	result := loginDefRange{uidMin: 1000, uidMax: 60000}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return result
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		value, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		switch fields[0] {
+		case "UID_MIN":
+			result.uidMin = value
+		case "UID_MAX":
+			result.uidMax = value
+		}
+	}
+
+	return result
+}
+
+func isRealUser(entry passwdEntry, uidRange loginDefRange) bool {
+	if entry.uid == 0 {
+		return true
+	}
+	if entry.uid < uidRange.uidMin || entry.uid > uidRange.uidMax {
+		return false
+	}
+	return isLoginShell(entry.shell)
+}
+
+func isLoginShell(shell string) bool {
+	shell = strings.TrimSpace(shell)
+	if shell == "" {
+		return false
+	}
+
+	base := shell
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+
+	switch base {
+	case "false", "nologin", "sync", "shutdown", "halt":
+		return false
+	default:
+		return true
+	}
+}
+
+func readShadowStatuses(path string) map[string]string {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	statuses := make(map[string]string)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, ":")
+		if len(parts) < 2 {
+			continue
+		}
+		statuses[parts[0]] = parts[1]
+	}
+
+	return statuses
+}
+
+func passwordStatusForUser(username string, shadowStatuses map[string]string) (string, *bool) {
+	if shadowStatuses == nil {
+		return "unknown (requires root)", nil
+	}
+
+	hash, ok := shadowStatuses[username]
+	if !ok {
+		return "unknown", nil
+	}
+
+	locked := false
+	switch {
+	case hash == "":
+		return "empty password", &locked
+	case strings.HasPrefix(hash, "!") || strings.HasPrefix(hash, "*"):
+		locked = true
+		return "locked", &locked
+	default:
+		return "unlocked", &locked
+	}
+}
+
+func readActiveSessions() map[string][]string {
+	out, err := exec.Command("who").Output()
+	if err != nil {
+		return map[string][]string{}
+	}
+
+	sessions := make(map[string][]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		username := fields[0]
+		tty := fields[1]
+		host := ""
+		if len(fields) >= 5 {
+			host = strings.Join(fields[4:], " ")
+			host = strings.Trim(host, "()")
+		}
+		source := classifyLoginSource(tty, host)
+		session := tty
+		if host != "" {
+			session += "@" + host
+		}
+		session += " (" + source + ")"
+		sessions[username] = append(sessions[username], session)
+	}
+
+	return sessions
+}
+
+func lastLoginForUser(username string) loginEntry {
+	out, err := exec.Command("last", "-w", "-F", username).Output()
+	if err != nil {
+		return loginEntry{when: "never", source: "never"}
+	}
+
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "wtmp begins") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 8 || fields[0] != username {
+			continue
+		}
+
+		tty := fields[1]
+		host := ""
+		dateStart := 2
+		if !looksLikeWeekday(fields[2]) {
+			host = fields[2]
+			dateStart = 3
+		}
+		if len(fields) < dateStart+5 {
+			continue
+		}
+
+		whenFields := fields[dateStart : dateStart+5]
+		when := strings.Join(whenFields, " ")
+		if parsed, err := time.Parse("Mon Jan 2 15:04:05 2006", when); err == nil {
+			when = parsed.Format("2006-01-02 15:04:05")
+		}
+
+		return loginEntry{
+			when:   when,
+			tty:    tty,
+			host:   host,
+			source: classifyLoginSource(tty, host),
+		}
+	}
+
+	return loginEntry{when: "never", source: "never"}
+}
+
+func looksLikeWeekday(value string) bool {
+	switch value {
+	case "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun":
+		return true
+	default:
+		return false
+	}
+}
+
+func classifyLoginSource(tty string, host string) string {
+	tty = strings.TrimSpace(tty)
+	host = strings.TrimSpace(strings.Trim(host, "()"))
+
+	switch {
+	case strings.HasPrefix(host, "tmux("):
+		return "tmux"
+	case host != "":
+		return "ssh"
+	case strings.HasPrefix(tty, "tty") || strings.HasPrefix(tty, "console"):
+		return "getty/console"
+	case strings.HasPrefix(tty, "seat"):
+		return "local graphical"
+	case strings.HasPrefix(tty, "pts/"):
+		return "local terminal"
+	default:
+		return "unknown"
+	}
+}
+
+func printUserInfoTable(users []userInfoRecord) {
+	headers := []string{"User", "UID", "Active", "Active source", "Password", "Last login", "Last source", "Shell"}
+	rows := make([][]string, 0, len(users))
+
+	for _, user := range users {
+		active := "no"
+		activeSource := "-"
+		if user.Active {
+			active = fmt.Sprintf("yes (%d)", user.ActiveSessions)
+			activeSource = user.ActiveSources
+		}
+
+		lastLogin := user.LastLogin
+		if user.LastTTY != "" {
+			lastLogin += " " + user.LastTTY
+		}
+
+		rows = append(rows, []string{
+			user.Username,
+			strconv.Itoa(user.UID),
+			active,
+			activeSource,
+			user.PasswordStatus,
+			lastLogin,
+			user.LastSource,
+			user.Shell,
+		})
+	}
+
+	printTable(headers, rows)
+}
+
+func printTable(headers []string, rows [][]string) {
+	widths := make([]int, len(headers))
+	for i, header := range headers {
+		widths[i] = len(header)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if len(cell) > widths[i] {
+				widths[i] = len(cell)
+			}
+		}
+	}
+
+	printBorder("╭", "┬", "╮", widths)
+	printRow(headers, widths)
+	printBorder("├", "┼", "┤", widths)
+	for _, row := range rows {
+		printRow(row, widths)
+	}
+	printBorder("╰", "┴", "╯", widths)
+}
+
+func printBorder(left string, middle string, right string, widths []int) {
+	fmt.Print(left)
+	for i, width := range widths {
+		fmt.Print(strings.Repeat("─", width+2))
+		if i == len(widths)-1 {
+			fmt.Print(right)
+		} else {
+			fmt.Print(middle)
+		}
+	}
+	fmt.Println()
+}
+
+func printRow(cells []string, widths []int) {
+	fmt.Print("│")
+	for i, cell := range cells {
+		fmt.Printf(" %-*s │", widths[i], cell)
+	}
+	fmt.Println()
+}

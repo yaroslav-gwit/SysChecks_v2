@@ -1,16 +1,13 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
 	"syschecks/helpers"
 	"time"
 
@@ -44,13 +41,8 @@ var (
 
 	// APT patterns
 	reMatchSysUpdate = regexp.MustCompile(`^Inst\s+`)
-	reMatchSecUpdate = regexp.MustCompile(`security`)
-)
-
-// OS detection cache
-var (
-	cachedOsType *detectOsStruct
-	osDetectOnce sync.Once
+	reMatchSecUpdate = regexp.MustCompile(`(?i)security`)
+	reAptInstLine    = regexp.MustCompile(`^Inst\s+(\S+)\s+(?:\[(.*?)\]\s+)?\((.*?)\)$`)
 )
 
 var (
@@ -102,56 +94,6 @@ func checkUpdates(cacheCreate bool, cacheUse bool, jsonPretty bool) {
 	fmt.Println(string(jsonOut))
 }
 
-type detectOsStruct struct {
-	deb         bool
-	dnf         bool
-	yum         bool
-	unsupported bool
-	osID        string
-}
-
-// detectOs identifies the Linux distribution and returns cached result on subsequent calls
-func detectOs() detectOsStruct {
-	osDetectOnce.Do(func() {
-		cachedOsType = detectOsUncached()
-	})
-	return *cachedOsType
-}
-
-// detectOsUncached performs the actual OS detection
-func detectOsUncached() *detectOsStruct {
-	osStruct := &detectOsStruct{}
-
-	file, err := os.Open("/etc/os-release")
-	if err != nil {
-		log.Fatalf("Could not read /etc/os-release: %v", err)
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "ID=") {
-			osStruct.osID = strings.Trim(strings.TrimPrefix(line, "ID="), `"`)
-			break
-		}
-	}
-
-	switch osStruct.osID {
-	case "ubuntu", "pop", "debian", "linuxmint":
-		osStruct.deb = true
-	case "centos":
-		osStruct.yum = true
-	case "almalinux", "ol", "rocky", "rhel", "fedora":
-		osStruct.dnf = true
-	default:
-		osStruct.unsupported = true
-		log.Fatalf("Sorry, this OS (%s) is not yet supported!", osStruct.osID)
-	}
-
-	return osStruct
-}
-
 type systemUpdatesStruct struct {
 	numberOfSystemUpdates    int
 	numberOfSecurityUpdates  int
@@ -159,23 +101,6 @@ type systemUpdatesStruct struct {
 	securityUpdatesAvailable bool
 	systemUpdatesList        []string
 	securityUpdatesList      []string
-}
-
-// runCommandWithTimeout executes a command with a context timeout
-func runCommandWithTimeout(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	return cmd.Output()
-}
-
-// runCommandWithTimeoutCombined executes a command and returns combined stdout/stderr
-func runCommandWithTimeoutCombined(ctx context.Context, name string, args ...string) ([]byte, int, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	out, err := cmd.CombinedOutput()
-	exitCode := 0
-	if cmd.ProcessState != nil {
-		exitCode = cmd.ProcessState.ExitCode()
-	}
-	return out, exitCode, err
 }
 
 func dnfCheck() systemUpdatesStruct {
@@ -195,22 +120,27 @@ func dnfCheck() systemUpdatesStruct {
 	}
 
 	// DNF cache refresh
-	if _, _, err := runCommandWithTimeoutCombined(ctx, "dnf", "makecache"); err != nil {
-		// Exit code 100 means updates available, which is fine
-		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 100 {
-			log.Printf("Warning: DNF cache update: %v", err)
-		}
+	if _, exitCode, err := runCommandWithTimeoutCombined(ctx, "dnf", "makecache"); err != nil && exitCode != 100 {
+		log.Printf("Warning: DNF cache update: %v", err)
 	}
 
-	// Check system updates
-	sysOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "check-update")
+	// Query system updates. repoquery gives stable fields and avoids parsing aligned columns.
+	sysOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "-q", "repoquery", "--upgrades", "--latest-limit=1", "--qf", "%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{repoid}")
 
-	// Check security updates
-	secOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "check-update", "--security")
+	// Query security updates from advisory metadata where available.
+	secOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "-q", "updateinfo", "list", "--updates", "--security")
 
-	// Parse system updates
-	result.systemUpdatesList = parseDnfOutput(string(sysOut), false)
-	result.securityUpdatesList = parseDnfOutput(string(secOut), true)
+	result.systemUpdatesList = parseDnfRepoqueryOutput(string(sysOut))
+	if len(result.systemUpdatesList) == 0 {
+		fallbackOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "check-update")
+		result.systemUpdatesList = parseDnfOutput(string(fallbackOut), false)
+	}
+
+	result.securityUpdatesList = parseUpdateinfoSecurityOutput(string(secOut))
+	if len(result.securityUpdatesList) == 0 {
+		fallbackOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "check-update", "--security")
+		result.securityUpdatesList = parseDnfOutput(string(fallbackOut), true)
+	}
 
 	result.numberOfSystemUpdates = len(result.systemUpdatesList)
 	result.numberOfSecurityUpdates = len(result.securityUpdatesList)
@@ -222,7 +152,7 @@ func dnfCheck() systemUpdatesStruct {
 
 // parseDnfOutput parses DNF check-update output
 func parseDnfOutput(output string, isSecurity bool) []string {
-	var updates []string
+	updates := []string{}
 
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -269,6 +199,85 @@ func parseDnfOutput(output string, isSecurity bool) []string {
 	return updates
 }
 
+// parseDnfRepoqueryOutput parses tab-separated dnf repoquery --upgrades output.
+func parseDnfRepoqueryOutput(output string) []string {
+	updates := []string{}
+	seen := make(map[string]bool)
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Split(line, "\t")
+		if len(fields) < 6 {
+			continue
+		}
+
+		name := strings.TrimSpace(fields[0])
+		epoch := strings.TrimSpace(fields[1])
+		version := strings.TrimSpace(fields[2])
+		release := strings.TrimSpace(fields[3])
+		arch := strings.TrimSpace(fields[4])
+		repo := strings.TrimSpace(fields[5])
+		if name == "" || version == "" {
+			continue
+		}
+
+		evr := version
+		if release != "" {
+			evr += "-" + release
+		}
+		if epoch != "" && epoch != "0" && epoch != "(none)" {
+			evr = epoch + ":" + evr
+		}
+
+		entry := fmt.Sprintf("%s.%s %s %s", name, arch, evr, repo)
+		if !seen[entry] {
+			updates = append(updates, entry)
+			seen[entry] = true
+		}
+	}
+
+	return updates
+}
+
+// parseUpdateinfoSecurityOutput parses dnf/yum updateinfo security advisory output.
+func parseUpdateinfoSecurityOutput(output string) []string {
+	updates := []string{}
+	packageIndex := make(map[string]int)
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(reMultiSpace.ReplaceAllString(line, " "))
+		if line == "" || shouldSkipYumLine(line) {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+		pkg := parts[len(parts)-1]
+		if strings.HasSuffix(pkg, ".src") {
+			continue
+		}
+
+		packageName := extractPackageName(pkg)
+		if packageName == "" {
+			continue
+		}
+		if existingIndex, ok := packageIndex[packageName]; ok {
+			updates[existingIndex] = pkg
+			continue
+		}
+		packageIndex[packageName] = len(updates)
+		updates = append(updates, pkg)
+	}
+
+	return updates
+}
+
 func debCheck() systemUpdatesStruct {
 	helpers.RootUserCheck()
 
@@ -291,8 +300,8 @@ func debCheck() systemUpdatesStruct {
 		log.Printf("Warning: APT cache update: %s (exit code: %d)", errorValue, exitCode)
 	}
 
-	// Check all updates using simulation mode
-	sysOut, _, err := runCommandWithTimeoutCombined(ctx, "apt", "dist-upgrade", "-s")
+	// Check all updates using apt-get simulation mode. apt-get has a stable scripting interface; apt does not.
+	sysOut, _, err := runCommandWithTimeoutCombined(ctx, "apt-get", "-s", "-o", "APT::Get::Show-Upgraded=true", "dist-upgrade")
 	if err != nil {
 		log.Printf("Warning: APT dist-upgrade simulation failed: %v", err)
 		return result
@@ -304,10 +313,7 @@ func debCheck() systemUpdatesStruct {
 			continue
 		}
 
-		// Clean up line: "Inst package (version repo)" -> "package (version repo)"
-		line = reMatchSysUpdate.ReplaceAllString(line, "")
-		line = strings.ReplaceAll(line, " []", "")
-		line = strings.TrimSpace(line)
+		line = formatAptInstLine(line)
 
 		if len(line) > 0 {
 			result.systemUpdatesList = append(result.systemUpdatesList, line)
@@ -323,6 +329,23 @@ func debCheck() systemUpdatesStruct {
 	result.securityUpdatesAvailable = result.numberOfSecurityUpdates > 0
 
 	return result
+}
+
+func formatAptInstLine(line string) string {
+	matches := reAptInstLine.FindStringSubmatch(strings.TrimSpace(line))
+	if len(matches) != 4 {
+		line = reMatchSysUpdate.ReplaceAllString(line, "")
+		line = strings.ReplaceAll(line, " []", "")
+		return strings.TrimSpace(line)
+	}
+
+	name := matches[1]
+	oldVersion := strings.TrimSpace(matches[2])
+	candidate := strings.TrimSpace(matches[3])
+	if oldVersion == "" {
+		return fmt.Sprintf("%s (%s)", name, candidate)
+	}
+	return fmt.Sprintf("%s [%s] (%s)", name, oldVersion, candidate)
 }
 
 func yumCheck() systemUpdatesStruct {
@@ -349,12 +372,12 @@ func yumCheck() systemUpdatesStruct {
 	// Check system updates
 	sysOut, _, _ := runCommandWithTimeoutCombined(ctx, "yum", "--cacheonly", "check-update")
 
-	// Check security updates
-	secOut, _, _ := runCommandWithTimeoutCombined(ctx, "yum", "--cacheonly", "updateinfo", "list", "updates", "security")
+	// Check security updates from advisory metadata where the distribution provides it.
+	secOut, _, _ := runCommandWithTimeoutCombined(ctx, "yum", "--cacheonly", "-q", "updateinfo", "list", "updates", "security")
 
 	// Parse system updates
 	result.systemUpdatesList = parseYumOutput(string(sysOut))
-	result.securityUpdatesList = parseYumSecurityOutput(string(secOut))
+	result.securityUpdatesList = parseUpdateinfoSecurityOutput(string(secOut))
 
 	result.numberOfSystemUpdates = len(result.systemUpdatesList)
 	result.numberOfSecurityUpdates = len(result.securityUpdatesList)
@@ -366,7 +389,7 @@ func yumCheck() systemUpdatesStruct {
 
 // parseYumOutput parses YUM check-update output
 func parseYumOutput(output string) []string {
-	var updates []string
+	updates := []string{}
 
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -388,34 +411,6 @@ func parseYumOutput(output string) []string {
 		line = strings.ReplaceAll(line, " appstream ", "")
 		line = strings.ReplaceAll(line, " epel ", "")
 		line = strings.ReplaceAll(line, " epel-source", "")
-
-		line = strings.TrimSpace(line)
-		if len(line) > 0 {
-			updates = append(updates, line)
-		}
-	}
-
-	return updates
-}
-
-// parseYumSecurityOutput parses YUM security updateinfo output
-func parseYumSecurityOutput(output string) []string {
-	var updates []string
-
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-
-		// Skip informational lines
-		if shouldSkipYumLine(line) {
-			continue
-		}
-
-		// Clean up the line
-		line = reMultiSpace.ReplaceAllString(line, "")
-		line = reSecReplace.ReplaceAllString(line, "")
 
 		line = strings.TrimSpace(line)
 		if len(line) > 0 {
@@ -456,18 +451,7 @@ func systemUpdates(useCache bool) systemUpdatesJsonStruct {
 	}
 
 	osType := detectOs()
-	var input systemUpdatesStruct
-
-	switch {
-	case osType.dnf:
-		input = dnfCheck()
-	case osType.deb:
-		input = debCheck()
-	case osType.yum:
-		input = yumCheck()
-	default:
-		log.Fatal("Sorry, but your OS is not yet supported!")
-	}
+	input := getPackageManager(osType).CheckUpdates()
 
 	return systemUpdatesJsonStruct{
 		NumberOfSystemUpdates:    input.numberOfSystemUpdates,

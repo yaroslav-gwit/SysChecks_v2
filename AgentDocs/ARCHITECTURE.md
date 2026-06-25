@@ -167,11 +167,15 @@ cmd/loginBanner.go: showLoginBanner()
 | Ubuntu | apt (deb) | ✅ |
 | Debian | apt (deb) | ✅ |
 | Pop!_OS | apt (deb) | ✅ |
+| Linux Mint / Elementary / Kali / Raspberry Pi OS / Zorin / KDE neon | apt (deb) | Supported |
 | CentOS | yum | ✅ |
 | AlmaLinux | dnf | ✅ |
 | Rocky Linux | dnf | ✅ |
 | Oracle Linux | dnf | ✅ |
 | RHEL | dnf | ✅ |
+| Fedora / Amazon Linux / openEuler | dnf/yum | Supported |
+
+OS selection is based on `/etc/os-release` `ID` and `ID_LIKE`, then verified against installed package manager binaries.
 
 ## File System Interactions
 

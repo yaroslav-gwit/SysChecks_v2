@@ -195,11 +195,15 @@ Locked packages will be skipped during automatic updates. Use `--ignore-lock-fil
 | Ubuntu 18.04+ | apt | ✅ Tested |
 | Debian 9+ | apt | ✅ Tested |
 | Pop!_OS | apt | ✅ Tested |
+| Linux Mint / Elementary / Kali / Raspberry Pi OS / Zorin / KDE neon | apt | ✅ Supported |
 | CentOS 7 | yum | ✅ Tested |
 | AlmaLinux 8+ | dnf | ✅ Tested |
 | Rocky Linux 8+ | dnf | ✅ Tested |
 | RHEL 8+ | dnf | ✅ Tested |
 | Oracle Linux 8+ | dnf | ✅ Tested |
+| Fedora / Amazon Linux / openEuler | dnf/yum | ✅ Supported |
+
+Package manager detection also uses `ID_LIKE` from `/etc/os-release` and falls back to the available `apt-get`, `dnf`, or `yum` binary for compatible derivatives.
 
 ## 🔍 Command Reference
 
@@ -221,6 +225,8 @@ syschecks
 ├── zabbix                         # Zabbix integration
 │   └── init                       # Initialize Zabbix support
 ├── sysinfo                        # System IP addresses (JSON)
+├── userinfo [--json|--json-pretty] [--all]
+│                                   # Real users, login state, password status
 └── version [--verbose, -v]        # Show version info
 ```
 
@@ -327,6 +333,7 @@ go build -ldflags="-X 'syschecks/cmd.Version=$VERSION' \
 - [Architecture Overview](AgentDocs/ARCHITECTURE.md) - System design and data flow
 - [Command Reference](AgentDocs/COMMANDS.md) - Detailed command documentation
 - [Development Guide](AgentDocs/DEVELOPMENT.md) - Contributing and development setup
+- [E2E Test Plan](AgentDocs/E2E_TESTING.md) - Release validation checklist
 - [Zabbix Integration](AgentDocs/ZABBIX_INTEGRATION.md) - Zabbix setup and templates
 - [Project Constitution](AgentDocs/CONSTITUTION.md) - Coding standards and best practices
 

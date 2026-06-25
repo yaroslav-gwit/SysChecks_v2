@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,30 +28,202 @@ var (
 	reSockets        = regexp.MustCompile(`^Socket\(s\):\s*(\d+)`)
 )
 
-// PrettyOsName returns the human-readable OS name from /etc/os-release
+// PrettyOsName returns the human-readable OS name from /etc/os-release.
 func PrettyOsName() string {
-	const fallback = "Sorry, could not pick up the OS name"
-
-	file, err := os.Open("/etc/os-release")
-	if err != nil {
-		return fallback
+	if proxmoxName := proxmoxVersionName(); proxmoxName != "" {
+		return proxmoxName
 	}
-	defer file.Close()
+	return prettyOsNameFromFiles([]string{
+		"/etc/os-release",
+		"/usr/lib/os-release",
+		"/etc/lsb-release",
+	})
+}
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "PRETTY_NAME=") {
-			// Strip prefix and quotes
-			value := strings.TrimPrefix(line, "PRETTY_NAME=")
-			value = strings.Trim(value, `"`)
-			if len(value) > 0 {
-				return value
+func prettyOsNameFromFile(path string) string {
+	return prettyOsNameFromFiles([]string{path})
+}
+
+func prettyOsNameFromFiles(paths []string) string {
+	const fallback = "Unknown Linux distribution"
+
+	var fallbackValues map[string]string
+	for _, path := range paths {
+		values := readReleaseValues(path)
+		if len(values) == 0 {
+			continue
+		}
+		if hasDescriptiveReleaseName(values) {
+			if name := formatReleaseValues(values); name != "" {
+				return name
 			}
+		}
+		if fallbackValues == nil {
+			fallbackValues = values
 		}
 	}
 
+	if fallbackValues != nil {
+		if name := formatReleaseValues(fallbackValues); name != "" {
+			return name
+		}
+	}
+
+	if name := legacyReleaseName(); name != "" {
+		return name
+	}
+
 	return fallback
+}
+
+func readReleaseValues(path string) map[string]string {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	values := make(map[string]string)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+
+		key = strings.TrimSpace(key)
+		values[key] = cleanReleaseValue(value)
+	}
+
+	return values
+}
+
+func hasDescriptiveReleaseName(values map[string]string) bool {
+	return values["PRETTY_NAME"] != "" ||
+		values["DISTRIB_DESCRIPTION"] != "" ||
+		values["NAME"] != "" ||
+		values["DISTRIB_ID"] != ""
+}
+
+func formatReleaseValues(values map[string]string) string {
+	if prettyName := strings.TrimSpace(values["PRETTY_NAME"]); prettyName != "" {
+		return prettyName
+	}
+
+	if description := strings.TrimSpace(values["DISTRIB_DESCRIPTION"]); description != "" {
+		return description
+	}
+
+	if name := strings.TrimSpace(values["NAME"]); name != "" {
+		if version := strings.TrimSpace(values["VERSION"]); version != "" {
+			return name + " " + version
+		}
+		return name
+	}
+
+	if id := strings.TrimSpace(values["ID"]); id != "" {
+		if versionID := strings.TrimSpace(values["VERSION_ID"]); versionID != "" {
+			return releaseDisplayName(id) + " " + versionID
+		}
+		return releaseDisplayName(id)
+	}
+
+	if id := strings.TrimSpace(values["DISTRIB_ID"]); id != "" {
+		if release := strings.TrimSpace(values["DISTRIB_RELEASE"]); release != "" {
+			return releaseDisplayName(id) + " " + release
+		}
+		return releaseDisplayName(id)
+	}
+
+	return ""
+}
+
+func cleanReleaseValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	value = strings.ReplaceAll(value, `\"`, `"`)
+	value = strings.ReplaceAll(value, `\\`, `\`)
+	return value
+}
+
+func releaseDisplayName(id string) string {
+	if name, ok := releaseNameAliases[strings.ToLower(id)]; ok {
+		return name
+	}
+	return id
+}
+
+var releaseNameAliases = map[string]string{
+	"almalinux": "AlmaLinux",
+	"amzn":      "Amazon Linux",
+	"arch":      "Arch Linux",
+	"centos":    "CentOS",
+	"debian":    "Debian GNU/Linux",
+	"fedora":    "Fedora Linux",
+	"kali":      "Kali GNU/Linux",
+	"linuxmint": "Linux Mint",
+	"neon":      "KDE neon",
+	"ol":        "Oracle Linux",
+	"openeuler": "openEuler",
+	"pop":       "Pop!_OS",
+	"raspbian":  "Raspberry Pi OS",
+	"rhel":      "Red Hat Enterprise Linux",
+	"rocky":     "Rocky Linux",
+	"ubuntu":    "Ubuntu",
+	"zorin":     "Zorin OS",
+}
+
+func legacyReleaseName() string {
+	for _, path := range []string{
+		"/etc/redhat-release",
+		"/etc/centos-release",
+		"/etc/almalinux-release",
+		"/etc/rocky-release",
+		"/etc/oracle-release",
+		"/etc/debian_version",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		value := strings.TrimSpace(string(data))
+		if value == "" {
+			continue
+		}
+		if filepath.Base(path) == "debian_version" {
+			return "Debian GNU/Linux " + value
+		}
+		return value
+	}
+
+	return ""
+}
+
+func proxmoxVersionName() string {
+	path, err := exec.LookPath("pveversion")
+	if err != nil {
+		return ""
+	}
+
+	out, err := exec.Command(path).Output()
+	if err != nil {
+		return "Proxmox VE"
+	}
+
+	version := strings.TrimSpace(string(out))
+	version = strings.TrimPrefix(version, "pve-manager/")
+	if idx := strings.Index(version, "/"); idx >= 0 {
+		version = version[:idx]
+	}
+	if version == "" {
+		return "Proxmox VE"
+	}
+	return "Proxmox VE " + version
 }
 
 // RootUserCheck ensures the current process is running as root.

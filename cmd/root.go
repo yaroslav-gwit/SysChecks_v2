@@ -74,6 +74,9 @@ func init() {
 	rootCmd.AddCommand(sysinfoCmd)
 
 	rootCmd.AddCommand(userinfoCmd)
+	userinfoCmd.Flags().BoolVar(&userinfoJSON, "json", false, "Output user information as JSON")
+	userinfoCmd.Flags().BoolVar(&userinfoJSONPretty, "json-pretty", false, "Output user information as pretty JSON")
+	userinfoCmd.Flags().BoolVar(&userinfoAllUsers, "all", false, "Include system and no-login users")
 
 	// Apply system or security updates
 	rootCmd.AddCommand(applyUpdatesCmd)

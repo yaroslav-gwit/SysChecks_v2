@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"syschecks/helpers"
-	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -123,6 +121,7 @@ func applyUpdates(updateList []string, osType detectOsStruct) {
 	if osType.unsupported {
 		log.Fatal("Unsupported OS")
 	}
+	pm := getPackageManager(osType)
 
 	totalPkgs := len(packages)
 	for i, pkg := range packages {
@@ -134,18 +133,8 @@ func applyUpdates(updateList []string, osType detectOsStruct) {
 			continue
 		}
 
-		// Create context with timeout for this package
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-
-		var cmd *exec.Cmd
-		switch {
-		case osType.yum:
-			cmd = exec.CommandContext(ctx, "yum", "update", "-y", pkg)
-		case osType.dnf:
-			cmd = exec.CommandContext(ctx, "dnf", "update", "-y", pkg)
-		case osType.deb:
-			cmd = exec.CommandContext(ctx, "apt-get", "install", "-y", pkg)
-		}
+		ctx, cancel := packageCommandTimeout()
+		cmd := pm.ApplyCommand(ctx, pkg)
 
 		out, err := cmd.CombinedOutput()
 		cancel() // Clean up context immediately after command completes

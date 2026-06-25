@@ -15,9 +15,6 @@ import (
 
 // Pre-compiled regex patterns for kernel operations (compiled once at package init)
 var (
-	// Kernel version cleanup patterns
-	reElCleanup = regexp.MustCompile(`\.el[789].*`)
-
 	// Kernel type detection
 	reOemMatch = regexp.MustCompile(`-oem`)
 
@@ -88,9 +85,6 @@ func getRunningKernel() string {
 
 	result := strings.TrimSpace(string(data))
 
-	// Clean up RHEL-style suffixes
-	result = reElCleanup.ReplaceAllString(result, "")
-
 	return result
 }
 
@@ -130,9 +124,6 @@ func getInstalledKernels() installedKernelsStruct {
 			reInitrd.MatchString(name) || reRetpoline.MatchString(name) {
 			continue
 		}
-
-		// Clean up RHEL-style suffixes
-		version = reElCleanup.ReplaceAllString(version, "")
 
 		// Categorize as OEM or generic
 		if reOemMatch.MatchString(version) {
@@ -285,26 +276,7 @@ func getOldKernels(runningKernel string, installedKernels []string, numberToKeep
 
 // generateCleanupCommands creates appropriate package manager commands for kernel cleanup
 func generateCleanupCommands(oldKernels []string, osType detectOsStruct) []string {
-	var commands []string
-
-	if osType.deb {
-		packages := findDebianPackagesToRemove(oldKernels)
-		if len(packages) > 0 {
-			commands = append(commands, "sudo apt purge -y "+strings.Join(packages, " "))
-		}
-	} else if osType.dnf {
-		packages := getRHELKernelPackages(oldKernels)
-		if len(packages) > 0 {
-			commands = append(commands, "sudo dnf remove -y "+strings.Join(packages, " "))
-		}
-	} else if osType.yum {
-		packages := getRHELKernelPackages(oldKernels)
-		if len(packages) > 0 {
-			commands = append(commands, "sudo yum remove -y "+strings.Join(packages, " "))
-		}
-	}
-
-	return commands
+	return getPackageManager(osType).KernelCleanupCommands(oldKernels)
 }
 
 // findDebianPackagesToRemove finds installed packages matching the old kernel versions
@@ -362,17 +334,62 @@ func findDebianPackagesToRemove(versions []string) []string {
 	return packagesToRemove
 }
 
-// getRHELKernelPackages maps kernel versions to RHEL-based package names
-func getRHELKernelPackages(kernelVersions []string) []string {
-	packages := make([]string, 0, len(kernelVersions)*3)
+// findRPMPackagesToRemove finds installed RPM packages that belong to old kernel versions.
+// It queries the package database instead of assuming kernel package names.
+func findRPMPackagesToRemove(versions []string) []string {
+	candidates := make(map[string]bool)
 
-	for _, version := range kernelVersions {
-		packages = append(packages,
-			"kernel-"+version,
-			"kernel-devel-"+version,
-			"kernel-headers-"+version,
-		)
+	for _, version := range versions {
+		for _, bootFile := range []string{
+			"/boot/vmlinuz-" + version,
+			"/boot/initramfs-" + version + ".img",
+			"/boot/System.map-" + version,
+			"/boot/config-" + version,
+		} {
+			cmd := exec.Command("rpm", "-qf", bootFile)
+			out, err := cmd.Output()
+			if err != nil {
+				continue
+			}
+			for _, pkg := range strings.Fields(string(out)) {
+				candidates[pkg] = true
+			}
+		}
 	}
 
-	return packages
+	cmd := exec.Command("rpm", "-qa")
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("Warning: Failed to list installed RPM packages: %v", err)
+	} else {
+		for _, pkg := range strings.Split(string(out), "\n") {
+			pkg = strings.TrimSpace(pkg)
+			if pkg == "" {
+				continue
+			}
+			for _, version := range versions {
+				if isRPMKernelPackageForVersion(pkg, version) {
+					candidates[pkg] = true
+					break
+				}
+			}
+		}
+	}
+
+	packagesToRemove := make([]string, 0, len(candidates))
+	for pkg := range candidates {
+		packagesToRemove = append(packagesToRemove, pkg)
+	}
+	natsort.Sort(packagesToRemove)
+
+	return packagesToRemove
+}
+
+func isRPMKernelPackageForVersion(pkgName string, version string) bool {
+	if version == "" || !strings.Contains(pkgName, version) {
+		return false
+	}
+
+	name := strings.SplitN(pkgName, "-", 2)[0]
+	return name == "kernel" || strings.HasPrefix(pkgName, "kernel-")
 }

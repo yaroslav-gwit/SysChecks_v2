@@ -18,7 +18,8 @@ syschecks
 ├── zabbix                        # Zabbix integration
 │   └── init                      # Initialize Zabbix support
 ├── sysinfo                       # Show IP addresses (JSON)
-├── userinfo                      # List users (JSON, stub)
+├── userinfo [--json] [--json-pretty] [--all]
+│                                 # List real users and login state
 └── version [--verbose, -v]       # Show version info
 ```
 
@@ -179,9 +180,28 @@ Output system IP addresses in JSON format.
 
 ### `syschecks userinfo`
 
-List system users in JSON format.
+List real system users in a formatted table.
 
-**Output:** Currently returns empty array `[]` (stub implementation)
+**Flags:**
+- `--json` - Output user information as compact JSON
+- `--json-pretty` - Output user information as formatted JSON
+- `--all` - Include system and no-login users
+
+**Default filtering:**
+- Includes `root`
+- Includes users in the normal UID range from `/etc/login.defs`
+- Excludes no-login service accounts unless `--all` is set
+
+**Displays:**
+- Username, UID, and shell
+- Whether the user currently has active sessions
+- Active session source such as SSH, getty/console, local graphical, terminal, or tmux
+- Password status from `/etc/shadow` when run as root
+- Last login time, TTY, and inferred source from `last -w -F`
+
+**Notes:**
+- Non-root users normally cannot read `/etc/shadow`; password status will be `unknown (requires root)`.
+- Login source is inferred from `who` and `last` TTY/host data.
 
 ---
 
