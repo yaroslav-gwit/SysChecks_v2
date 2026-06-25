@@ -8,19 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Enhanced release automation script with dry-run mode, checksums, and changelog integration
-- SHA256 checksum generation for all release binaries
-- Multi-architecture builds (Linux amd64/arm64, macOS amd64/arm64)
-- Semantic version validation in release script
-- Interactive confirmation prompts with `--force` override
-- Verbose output mode for release debugging
+- None
 
 ### Changed
-- Improved release script with better error handling and logging
-- Release notes now automatically extract from CHANGELOG.md
+- None
 
 ### Fixed
 - None
+
+---
+
+## [1.0.2] - 2026-06-25
+
+### Added
+- Package-manager abstraction for apt, dnf, and yum backends.
+- Broader distro detection using `/etc/os-release` `ID` and `ID_LIKE`, plus installed package-manager binaries.
+- Support notes for additional apt and dnf/yum-compatible distributions.
+- Real `syschecks userinfo` output with a pretty table by default.
+- `syschecks userinfo --json`, `--json-pretty`, and `--all` flags.
+- User inventory fields for active sessions, password lock state, last login time, login source, UID/GID, shell, home, and full name.
+- End-to-end release validation runbook in `AgentDocs/E2E_TESTING.md`.
+- Tests for package-manager detection, update parsers, kernel package matching, OS pretty-name fallback, and userinfo classification.
+
+### Changed
+- APT update checks now use the stable `apt-get` scripting interface instead of `apt`.
+- DNF full-update checks now prefer `dnf repoquery --upgrades --qf` for machine-readable package data.
+- DNF/YUM security checks now use advisory metadata from `updateinfo`.
+- Package command execution now forces stable noninteractive environment settings.
+- `apply-updates` now routes package operations through the selected package-manager backend.
+- Kernel cleanup now uses package-manager backends for cleanup command generation.
+- RPM kernel cleanup now discovers installed kernel packages dynamically from RPM ownership and installed package inventory instead of hard-coded package names.
+- Kernel version comparison and cleanup now keep exact kernel release strings.
+- Banner OS display-name detection now uses layered release metadata inspired by neofetch-style fallbacks.
+- Documentation now reflects expanded distro support and release validation workflows.
+
+### Fixed
+- Security update counts no longer over-count multiple advisories for the same package.
+- Empty update lists now serialize as `[]` instead of `null`.
+- DNF `makecache` handling treats update-related exit codes correctly.
+- Banner no longer falls back to the old "could not pick up OS name" message when common release metadata is available.
 
 ---
 
@@ -117,5 +143,6 @@ Each release section follows this format:
 
 ---
 
-[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.1...v1.0.2
 [1.0.0]: https://github.com/yaroslav-gwit/SysChecks_v2/releases/tag/v1.0.0
