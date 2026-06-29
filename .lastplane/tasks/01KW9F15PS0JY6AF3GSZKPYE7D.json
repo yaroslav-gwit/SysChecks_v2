@@ -1,0 +1,17 @@
+{
+  "id": "01KW9F15PS0JY6AF3GSZKPYE7D",
+  "title": "Isolated machine update script",
+  "status": "brainstorming",
+  "agent": "shell",
+  "created_at": "2026-06-29T10:33:04.985186321Z",
+  "updated_at": "2026-06-29T10:33:08.477653264Z",
+  "tabs": [
+    {
+      "id": "01KW9F15PS0JY6AF3GSZKPYE7D-1",
+      "name": "Agent",
+      "type": "terminal",
+      "tmux_session": "01KW9F15PS0JY6AF3GSZKPYE7D-1",
+      "running": true
+    }
+  ]
+}

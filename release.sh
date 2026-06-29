@@ -327,7 +327,19 @@ build_binaries() {
             go build -ldflags="$LDFLAGS -w -s" -o "$BUILD_DIR/syschecks-linux-amd64" .
         log_success "Built syschecks-linux-amd64"
     fi
-    
+
+    # Pack self-extracting offline installers (for air-gapped hosts)
+    log_info "Creating self-extracting .run installers..."
+    for arch in amd64 arm64; do
+        if [ -f "$BUILD_DIR/syschecks-linux-$arch" ]; then
+            if ./create-run-installer.sh --arch "$arch" --version "$VERSION" > /dev/null; then
+                log_success "Built syschecks-installer-$arch.run"
+            else
+                log_warning "Failed to build .run installer for $arch"
+            fi
+        fi
+    done
+
     log_success "All binaries built successfully"
 }
 

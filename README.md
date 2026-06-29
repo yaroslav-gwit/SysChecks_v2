@@ -37,6 +37,56 @@ sudo ln -sf /opt/syschecks/syschecks /usr/bin/syschecks
 sudo syschecks completion bash > /etc/bash_completion.d/syschecks
 ```
 
+## Offline / Air-Gapped Install (via bastion)
+
+For servers with no internet access, SysChecks ships a self-extracting `.run`
+installer that bundles the binary, the package lock file, and the offline
+installer into a single file. Copy it to the target host and run it as root —
+nothing is downloaded on the target.
+
+**Usecase:** the air-gapped servers have no internet, but an admin can reach
+them over SSH from a bastion host that *does* have internet.
+
+One-liner from the bastion (streams the installer straight to the target over SSH):
+
+```bash
+curl -fsSL https://github.com/yaroslav-gwit/SysChecks_v2/releases/latest/download/syschecks-installer-amd64.run \
+  | ssh root@<remote_ip> 'cat > /tmp/syschecks-installer.run && bash /tmp/syschecks-installer.run && rm -f /tmp/syschecks-installer.run'
+```
+
+For `arm64` targets, swap in `syschecks-installer-arm64.run`.
+
+Or, copy once and run (handy for multiple hosts or a fully offline bastion):
+
+```bash
+# On the bastion: fetch the installer once
+curl -fsSLO https://github.com/yaroslav-gwit/SysChecks_v2/releases/latest/download/syschecks-installer-amd64.run
+
+# Push it to each target and install
+scp syschecks-installer-amd64.run root@<remote_ip>:/tmp/
+ssh root@<remote_ip> 'bash /tmp/syschecks-installer.run'
+```
+
+Re-running the installer updates the binary in place and preserves your
+existing `package.lock.json` (the new lock is staged as
+`package.lock.latest.json` for review).
+
+Inspect the bundle without installing:
+
+```bash
+./syschecks-installer-amd64.run --extract /tmp/syschecks-payload
+./syschecks-installer-amd64.run --help
+```
+
+Build the `.run` yourself from a checkout (it is also produced automatically by
+`./release.sh` and attached to each GitHub release):
+
+```bash
+./build-advanced.sh cross          # produce bin/syschecks-linux-{amd64,arm64}
+./create-run-installer.sh --arch amd64
+# -> bin/syschecks-installer-amd64.run
+```
+
 ## Common Commands
 
 ```bash
