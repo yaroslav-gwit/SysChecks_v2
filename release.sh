@@ -447,11 +447,34 @@ generate_release_notes() {
         compare_url="https://github.com/${REPO}/releases/tag/v${version}"
     fi
     
-    # Prerelease banner (empty for a normal release, so no blank gap is left).
-    local prerelease_note=""
-    if [ "$release_type" = "prerelease" ]; then
-        prerelease_note="> ⚠️ **This is a pre-release version.** It may contain bugs or incomplete features."$'\n'
+    # -------------------------------------------------------------------------
+    # Friendly release intro.
+    #
+    # NOTE FOR FUTURE LLM AGENTS CUTTING A RELEASE:
+    #   Do not ship the generic fallback line below. Write a warm, human, 2-4
+    #   sentence intro that summarizes THIS release in plain language (what
+    #   users get, why it matters) and set it dynamically before running this
+    #   script, in priority order:
+    #     1. export RELEASE_INTRO="In this release we're excited to ..."   (preferred)
+    #     2. create release-notes/v${version}.md with the intro text
+    #   Keep it upbeat but honest; highlight headline features and important
+    #   fixes. Markdown and emoji are fine. See RELEASES.md > "Friendly intros".
+    # -------------------------------------------------------------------------
+    local intro=""
+    if [ -n "${RELEASE_INTRO:-}" ]; then
+        intro="$RELEASE_INTRO"
+    elif [ -f "release-notes/v${version}.md" ]; then
+        intro=$(cat "release-notes/v${version}.md")
+    else
+        intro="We're excited to share **SysChecks v${version}**! Here's everything that's new and improved in this release. 🎉"
     fi
+
+    # Preamble: optional prerelease banner, then the friendly intro.
+    local preamble=""
+    if [ "$release_type" = "prerelease" ]; then
+        preamble="> ⚠️ **This is a pre-release version.** It may contain bugs or incomplete features."$'\n\n'
+    fi
+    preamble+="$intro"
 
     # Body: the changelog entry (trimmed of leading/trailing blank lines) or default notes.
     local body_section
@@ -473,7 +496,9 @@ FEATURES
     # Build release notes
     read -r -d '' release_notes << EOF || true
 ## SysChecks v${version}
-${prerelease_note}
+
+${preamble}
+
 ${body_section}
 
 ### Installation

@@ -173,12 +173,40 @@ Each release includes multiple binary variants:
 
 The release script automatically generates release notes with:
 
+- A friendly intro paragraph (see below)
 - Version-specific changes from CHANGELOG.md (if available)
 - Feature highlights (fallback if no changelog entry)
 - Binary download instructions for all platforms
 - Checksum verification commands
 - Quick start examples
 - Auto-install script link
+
+### Friendly intros (for LLM agents cutting a release)
+
+Every release body opens with a short, warm intro. **Do not ship the generic
+fallback line** — write a human, 2-4 sentence summary of *this* release in plain
+language: what users get, why it matters, and any headline features or important
+fixes. Upbeat but honest; markdown and emoji are welcome.
+
+Provide it dynamically, in priority order:
+
+1. **`RELEASE_INTRO` env var (preferred)** — set it right before running the script:
+
+   ```bash
+   export RELEASE_INTRO="In this release we're excited to make SysChecks self-maintaining, plus a fix for noisy update reports on some RHEL hosts. 🚀"
+   ./release.sh X.Y.Z
+   ```
+
+2. **`release-notes/vX.Y.Z.md` file** — commit the intro text for the version:
+
+   ```bash
+   printf '%s\n' "In this release ..." > release-notes/vX.Y.Z.md
+   ./release.sh X.Y.Z
+   ```
+
+If neither is provided, a generic fallback is used (fine for automation, but a
+tailored intro is strongly preferred for human-facing releases). The intro sits
+between the title and the changelog sections; keep it to a paragraph.
 
 ### Changelog Integration
 
