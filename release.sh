@@ -35,16 +35,18 @@ VERBOSE=false
 # Utility Functions
 # ============================================================================
 
+# Status/log output goes to stderr so it never contaminates command
+# substitutions that capture a function's stdout (e.g. release notes).
 log_info() {
-    echo -e "${BLUE}ℹ${NC} $1"
+    echo -e "${BLUE}ℹ${NC} $1" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}✓${NC} $1"
+    echo -e "${GREEN}✓${NC} $1" >&2
 }
 
 log_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
+    echo -e "${YELLOW}⚠${NC} $1" >&2
 }
 
 log_error() {
@@ -52,9 +54,9 @@ log_error() {
 }
 
 log_step() {
-    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}$1${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
+    echo -e "${BOLD}$1${NC}" >&2
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}" >&2
 }
 
 die() {
@@ -424,7 +426,7 @@ generate_release_notes() {
     
     local release_notes=""
     local changelog_notes=""
-    
+
     # Try to extract from CHANGELOG.md
     if changelog_notes=$(extract_changelog "$version" 2>/dev/null) && [ -n "$changelog_notes" ]; then
         log_success "Found changelog entry for v$version"
@@ -432,20 +434,31 @@ generate_release_notes() {
         log_info "No changelog entry found, generating default notes"
         changelog_notes=""
     fi
+
+    # Determine the previous release tag for the "Full Changelog" link.
+    # The v${version} tag does not exist yet at this point, so the newest
+    # existing tag is the previous release.
+    local previous_tag
+    previous_tag=$(git tag -l 'v*' --sort=-version:refname | grep -vxF "v${version}" | head -1)
+    local compare_url
+    if [ -n "$previous_tag" ]; then
+        compare_url="https://github.com/${REPO}/compare/${previous_tag}...v${version}"
+    else
+        compare_url="https://github.com/${REPO}/releases/tag/v${version}"
+    fi
     
-    # Build release notes
-    read -r -d '' release_notes << EOF || true
-## SysChecks v${version}
+    # Prerelease banner (empty for a normal release, so no blank gap is left).
+    local prerelease_note=""
+    if [ "$release_type" = "prerelease" ]; then
+        prerelease_note="> ⚠️ **This is a pre-release version.** It may contain bugs or incomplete features."$'\n'
+    fi
 
-$(if [ "$release_type" = "prerelease" ]; then
-    echo "> ⚠️ **This is a pre-release version.** It may contain bugs or incomplete features."
-    echo ""
-fi)
-
-$(if [ -n "$changelog_notes" ]; then
-    echo "$changelog_notes"
-else
-    cat << FEATURES
+    # Body: the changelog entry (trimmed of leading/trailing blank lines) or default notes.
+    local body_section
+    if [ -n "$changelog_notes" ]; then
+        body_section=$(printf '%s\n' "$changelog_notes" | awk 'NF{p=1} p' | tac | awk 'NF{p=1} p' | tac)
+    else
+        body_section=$(cat << 'FEATURES'
 ### Features
 
 - **Kernel Management** - Check reboot requirements and clean up old kernels
@@ -454,7 +467,14 @@ else
 - **Zabbix Integration** - Native UserParameter support for monitoring
 - **SSH Login Banner** - System info display on login
 FEATURES
-fi)
+)
+    fi
+
+    # Build release notes
+    read -r -d '' release_notes << EOF || true
+## SysChecks v${version}
+${prerelease_note}
+${body_section}
 
 ### Installation
 
@@ -504,7 +524,7 @@ syschecks version -v
 
 ---
 
-**Full Changelog**: https://github.com/${REPO}/compare/...v${version}
+**Full Changelog**: ${compare_url}
 EOF
 
     echo "$release_notes"
