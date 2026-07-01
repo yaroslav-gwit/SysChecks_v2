@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -287,6 +289,22 @@ func runCommandWithTimeoutCombined(ctx context.Context, name string, args ...str
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 	return out, exitCode, err
+}
+
+// runCommandWithTimeoutStdout executes a command and returns only stdout. stderr is
+// discarded so package-manager warnings (e.g. dnf "Repository ... is listed more than
+// once in the configuration") never leak into the parsed package list.
+func runCommandWithTimeoutStdout(ctx context.Context, name string, args ...string) ([]byte, int, error) {
+	cmd := newCommand(ctx, name, args...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.Discard
+	err := cmd.Run()
+	exitCode := 0
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+	return stdout.Bytes(), exitCode, err
 }
 
 func packageCommandTimeout() (context.Context, context.CancelFunc) {

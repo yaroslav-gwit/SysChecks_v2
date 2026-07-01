@@ -30,6 +30,10 @@ var (
 	reSubscriptionMgmt = regexp.MustCompile(`Updating\s+Subscription\s+Management`)
 	reSecurityPrefix   = regexp.MustCompile(`^Security:\s+`)
 
+	// Informational/warning lines that are not packages and must never be parsed as one.
+	reNoSecurityNeeded = regexp.MustCompile(`(?i)no security updates needed`)
+	reRepoListedTwice  = regexp.MustCompile(`(?i)is listed more than once`)
+
 	// YUM-specific continue patterns
 	reLoadedPlugins  = regexp.MustCompile(`Loaded plugins:`)
 	reUpdateInfoDone = regexp.MustCompile(`updateinfo list done`)
@@ -125,20 +129,21 @@ func dnfCheck() systemUpdatesStruct {
 	}
 
 	// Query system updates. repoquery gives stable fields and avoids parsing aligned columns.
-	sysOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "-q", "repoquery", "--upgrades", "--latest-limit=1", "--qf", "%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{repoid}")
+	// stdout only: package-manager warnings on stderr must not pollute the parsed list.
+	sysOut, _, _ := runCommandWithTimeoutStdout(ctx, "dnf", "--cacheonly", "-q", "repoquery", "--upgrades", "--latest-limit=1", "--qf", "%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{repoid}")
 
 	// Query security updates from advisory metadata where available.
-	secOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "-q", "updateinfo", "list", "--updates", "--security")
+	secOut, _, _ := runCommandWithTimeoutStdout(ctx, "dnf", "--cacheonly", "-q", "updateinfo", "list", "--updates", "--security")
 
 	result.systemUpdatesList = parseDnfRepoqueryOutput(string(sysOut))
 	if len(result.systemUpdatesList) == 0 {
-		fallbackOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "check-update")
+		fallbackOut, _, _ := runCommandWithTimeoutStdout(ctx, "dnf", "--cacheonly", "check-update")
 		result.systemUpdatesList = parseDnfOutput(string(fallbackOut), false)
 	}
 
 	result.securityUpdatesList = parseUpdateinfoSecurityOutput(string(secOut))
 	if len(result.securityUpdatesList) == 0 {
-		fallbackOut, _, _ := runCommandWithTimeoutCombined(ctx, "dnf", "--cacheonly", "check-update", "--security")
+		fallbackOut, _, _ := runCommandWithTimeoutStdout(ctx, "dnf", "--cacheonly", "check-update", "--security")
 		result.securityUpdatesList = parseDnfOutput(string(fallbackOut), true)
 	}
 
@@ -168,6 +173,9 @@ func parseDnfOutput(output string, isSecurity bool) []string {
 			break
 		}
 		if reSubscriptionMgmt.MatchString(line) || reSecurityPrefix.MatchString(line) {
+			continue
+		}
+		if reNoSecurityNeeded.MatchString(line) || reRepoListedTwice.MatchString(line) {
 			continue
 		}
 
@@ -369,11 +377,11 @@ func yumCheck() systemUpdatesStruct {
 		log.Printf("Warning: YUM cache update: %v", err)
 	}
 
-	// Check system updates
-	sysOut, _, _ := runCommandWithTimeoutCombined(ctx, "yum", "--cacheonly", "check-update")
+	// Check system updates (stdout only; stderr warnings must not be parsed as packages).
+	sysOut, _, _ := runCommandWithTimeoutStdout(ctx, "yum", "--cacheonly", "check-update")
 
 	// Check security updates from advisory metadata where the distribution provides it.
-	secOut, _, _ := runCommandWithTimeoutCombined(ctx, "yum", "--cacheonly", "-q", "updateinfo", "list", "updates", "security")
+	secOut, _, _ := runCommandWithTimeoutStdout(ctx, "yum", "--cacheonly", "-q", "updateinfo", "list", "updates", "security")
 
 	// Parse system updates
 	result.systemUpdatesList = parseYumOutput(string(sysOut))
@@ -430,7 +438,9 @@ func shouldSkipYumLine(line string) bool {
 		reVersionLock.MatchString(line) ||
 		reMetaDataContinue.MatchString(line) ||
 		reSubMgr.MatchString(line) ||
-		reMgrVersionLock.MatchString(line)
+		reMgrVersionLock.MatchString(line) ||
+		reNoSecurityNeeded.MatchString(line) ||
+		reRepoListedTwice.MatchString(line)
 }
 
 type systemUpdatesJsonStruct struct {

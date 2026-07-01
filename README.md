@@ -116,7 +116,12 @@ sudo syschecks userinfo --json-pretty
 # Cron and Zabbix setup
 sudo syschecks cron init
 sudo syschecks cron updates --security
+sudo syschecks cron autoupdate
 sudo syschecks zabbix init
+
+# Self-update from the latest GitHub release
+sudo syschecks self-update --check
+sudo syschecks self-update
 ```
 
 ## Command Tree
@@ -130,11 +135,13 @@ syschecks
 ├── banner [--no-emojies]
 ├── cron
 │   ├── init
-│   └── updates [--security|--system]
+│   ├── updates [--security|--system]
+│   └── autoupdate [--disable]
 ├── zabbix
 │   └── init
 ├── sysinfo
 ├── userinfo [--json|--json-pretty] [--all]
+├── self-update [--check] [--force]
 └── version [--verbose]
 ```
 

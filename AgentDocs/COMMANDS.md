@@ -13,13 +13,16 @@ syschecks
 ├── banner [--no-emojies, -n]     # Display login banner
 ├── cron                          # Cron job management
 │   ├── init                      # Create cache update cron
-│   └── updates [--security] [--system]
-│                                 # Enable automatic updates
+│   ├── updates [--security] [--system]
+│   │                             # Enable automatic updates
+│   └── autoupdate [--disable]    # Schedule syschecks self-update
 ├── zabbix                        # Zabbix integration
 │   └── init                      # Initialize Zabbix support
 ├── sysinfo                       # Show IP addresses (JSON)
 ├── userinfo [--json] [--json-pretty] [--all]
 │                                 # List real users and login state
+├── self-update [--check] [--force]
+│                                 # Update from the latest GitHub release
 └── version [--verbose, -v]       # Show version info
 ```
 
@@ -147,6 +150,23 @@ Enable automatic updates via cron jobs.
 
 ---
 
+### `syschecks cron autoupdate`
+
+Schedule a cron job that keeps syschecks updated to the latest GitHub release.
+
+**Flags:**
+- `--disable` - Remove the auto-update cron job
+
+**Creates:** `/etc/cron.d/syschecks_autoupdate` (runs `syschecks self-update`)
+
+**Schedule:** Daily at 3:30 AM (with random delay)
+
+**Log:** `/var/log/syschecks_selfupdate.log`
+
+**Requires:** Root privileges
+
+---
+
 ### `syschecks zabbix init`
 
 Configure Zabbix agent to work with syschecks.
@@ -202,6 +222,28 @@ List real system users in a formatted table.
 **Notes:**
 - Non-root users normally cannot read `/etc/shadow`; password status will be `unknown (requires root)`.
 - Login source is inferred from `who` and `last` TTY/host data.
+
+---
+
+### `syschecks self-update`
+
+Update the installed binary to the latest GitHub release.
+
+**Flags:**
+- `--check` - Only report whether an update is available; do not install
+- `--force` - Reinstall the latest release even if the version already matches
+
+**Behavior:**
+1. Queries the latest release from the GitHub API.
+2. No-op when the installed version already matches the latest release (unless `--force`); never downgrades.
+3. Downloads the asset for the running OS/arch (`syschecks-<os>-<arch>`) into the target directory.
+4. Verifies the published SHA-256 from `checksums-sha256.txt` when present.
+5. Atomically replaces the running binary (resolving symlinks such as `/bin/syschecks`), preserving file mode and ownership.
+
+**Environment:**
+- `GITHUB_TOKEN` (optional) - raises the GitHub API rate limit / allows private repos.
+
+**Requires:** Root privileges (to replace the binary under `/opt/syschecks`).
 
 ---
 

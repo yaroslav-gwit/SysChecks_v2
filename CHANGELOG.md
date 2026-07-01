@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-07-01
+
+### Added
+- `syschecks self-update` — updates the binary in place from the latest GitHub release. Verifies the published SHA-256 checksum, replaces the running executable atomically (safe even while in use), and preserves file mode and ownership. Supports `--check` (report only) and `--force` (reinstall the same version). Honors an optional `GITHUB_TOKEN` for higher API rate limits.
+- `syschecks cron autoupdate` — schedules a daily cron job that runs `self-update`; `--disable` removes it.
+- Tests for semantic version comparison used by the self-updater.
+
+### Fixed
+- DNF/YUM update checks no longer parse package-manager warnings as packages. Queries now read stdout only, so messages such as `Repository <name> is listed more than once in the configuration` and `No security updates needed, but N update available` (emitted on stderr) can no longer inflate `security_updates`/`security_updates_list`. Reproduced and fixed on Rocky Linux 10.
+
+---
+
 ## [1.0.2] - 2026-06-25
 
 ### Added
@@ -143,6 +155,7 @@ Each release section follows this format:
 
 ---
 
-[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.1...v1.0.2
 [1.0.0]: https://github.com/yaroslav-gwit/SysChecks_v2/releases/tag/v1.0.0

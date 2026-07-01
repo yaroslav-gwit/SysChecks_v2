@@ -10,6 +10,7 @@ const (
 	SECURITY_UPDATES_JOB = "/etc/cron.d/syschecks_updates_security"
 	SYSTEM_UPDATES_JOB   = "/etc/cron.d/syschecks_updates_system"
 	CACHE_JOB            = "/etc/cron.d/syschecks_cache"
+	AUTOUPDATE_JOB       = "/etc/cron.d/syschecks_autoupdate"
 	CRON_FILE_PERMS      = 0644
 )
 
@@ -81,6 +82,44 @@ LOG_FILE="/var/log/syschecks_updates.log"
 	}
 
 	fmt.Printf("Created system updates cron job: %s\n", SYSTEM_UPDATES_JOB)
+}
+
+// AutoUpdateEnable creates a cron job that keeps syschecks updated to the latest release
+func AutoUpdateEnable() {
+	RootUserCheck()
+
+	cronTemplate := `# This cron job updates syschecks to the latest GitHub release every day at 03:30 (with a random delay)
+# Created by syschecks
+#
+
+SHELL=/bin/bash
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+MAILTO=root
+
+COMMAND="syschecks self-update"
+LOG_FILE="/var/log/syschecks_selfupdate.log"
+30 3 * * *  root  sleep ${RANDOM:0:2} && touch ${LOG_FILE} && ${COMMAND} 2>&1 | tee -a ${LOG_FILE}
+`
+	if err := os.WriteFile(AUTOUPDATE_JOB, []byte(cronTemplate), CRON_FILE_PERMS); err != nil {
+		log.Fatalf("Error writing cron file %s: %v", AUTOUPDATE_JOB, err)
+	}
+
+	fmt.Printf("Created auto-update cron job: %s\n", AUTOUPDATE_JOB)
+}
+
+// AutoUpdateDisable removes the auto-update cron job if present
+func AutoUpdateDisable() {
+	RootUserCheck()
+
+	if err := os.Remove(AUTOUPDATE_JOB); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Auto-update cron job not present: %s\n", AUTOUPDATE_JOB)
+			return
+		}
+		log.Fatalf("Error removing cron file %s: %v", AUTOUPDATE_JOB, err)
+	}
+
+	fmt.Printf("Removed auto-update cron job: %s\n", AUTOUPDATE_JOB)
 }
 
 // removeOldJobs removes any existing update cron jobs to avoid conflicts

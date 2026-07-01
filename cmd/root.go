@@ -67,6 +67,8 @@ func init() {
 	cronUpdatesCmd.Flags().BoolVarP(&cronSecurityUpdates, "security", "", false, "Enable automatic security updates (using a cron job)")
 	cronUpdatesCmd.Flags().BoolVarP(&cronSystemUpdates, "system", "", false, "Enable automatic system updates (using a cron job)")
 	// cronUpdatesCmd.Flags().BoolVarP(&cronSystemUpdatesHold, "system-hold", "", false, "Enable automatic system updates, but hold back docker and Nvidia packages")
+	cronCmd.AddCommand(cronAutoUpdateCmd)
+	cronAutoUpdateCmd.Flags().BoolVar(&cronAutoUpdateDisable, "disable", false, "Remove the auto-update cron job")
 
 	rootCmd.AddCommand(zabbixCmd)
 	zabbixCmd.AddCommand(zabbixInitCmd)
@@ -86,4 +88,9 @@ func init() {
 	// Print version and exit
 	rootCmd.AddCommand(versionCmd)
 	versionCmd.Flags().BoolVarP(&versionVerbose, "verbose", "v", false, "Show detailed version information")
+
+	// Self-update from the latest GitHub release
+	rootCmd.AddCommand(selfUpdateCmd)
+	selfUpdateCmd.Flags().BoolVar(&selfUpdateCheckOnly, "check", false, "Only check whether an update is available; do not install")
+	selfUpdateCmd.Flags().BoolVar(&selfUpdateForce, "force", false, "Reinstall the latest release even if the version already matches")
 }
