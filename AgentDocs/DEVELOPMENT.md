@@ -237,26 +237,18 @@ log.Printf("Debug: value = %v\n", variable)
 
 ## Release Process
 
-### Using release.sh
+See **`AgentDocs/RELEASING.md`** for the full playbook (run the E2E tests first,
+update the changelog, write a friendly intro, then run the script). In short:
 
 ```bash
-# Create a release
-./release.sh 1.0.0
-
-# Create a prerelease
-./release.sh 1.0.0-beta prerelease
-
-# Create a draft
-./release.sh 1.0.0 draft
+# Dry run, then real release (builds binaries + offline .run installers, tags, publishes)
+./release.sh -n X.Y.Z
+export RELEASE_INTRO="In this release we're excited to ..."
+./release.sh -f X.Y.Z
 ```
 
-### Manual Tag and Release
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-# GitHub Actions will create the release
-```
+`release.sh` only tags `HEAD` and pushes the tag, so commit and
+`git push origin main` before releasing.
 
 ## Common Issues
 

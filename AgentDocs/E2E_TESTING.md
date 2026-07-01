@@ -701,3 +701,61 @@ sudo rm -rf /opt/syschecks/package.lock.json
 ```
 
 If Zabbix config was modified in a VM, restore the VM snapshot or restore the saved config backup.
+
+## Container gotchas
+
+Three quirks of minimal Docker images cause false failures. Account for them so
+you don't chase non-bugs:
+
+- **`syschecks banner` needs a real TTY on stdout.** The box-drawing library
+  (box-cli-maker) calls `ioctl(TIOCGWINSZ)` on stdout; without a tty it fails
+  with `inappropriate ioctl for device` and exits 1. Run banner under
+  `docker run -t` and do **not** redirect its stdout (redirecting to a file
+  re-triggers the failure). Capture docker's tty output on the host side instead.
+- **Minimal EL images (fedora / almalinux / rockylinux / oraclelinux / centos)
+  lack `/etc/cron.d`.** Every `cron` subcommand fails to write until you
+  `mkdir -p /etc/cron.d`. This affects the pre-existing `cron init` /
+  `cron updates` too, not just `cron autoupdate`.
+- **Minimal EL images lack `/boot`.** `kernel cleanup` and `banner` fail with
+  `Could not read /boot directory` until you `mkdir -p /boot`.
+
+Tooling notes:
+
+- `docker` here needs `sudo` (plain `docker` = permission denied; `sudo -n docker`
+  works).
+- Avoid `set -o pipefail` in the harness: `grep -q` closes the pipe early and
+  the upstream `syschecks` gets `SIGPIPE`, so the pipeline reports failure even
+  when the match succeeded.
+
+## Reference test host
+
+Container and VM matrices cover most cases, but some checks are best confirmed
+against a real, long-lived server (e.g. genuine repo metadata and warnings that
+containers don't reproduce).
+
+> **Ask the operator for an SSH endpoint.** This repo intentionally does not
+> hardcode one. Before doing "real" host testing, ask the user / admin / operator
+> to provide a disposable or non-production host to use, e.g.
+> `root@<your-test-host>`. Confirm you have permission to install to
+> `/opt/syschecks` and replace the binary there.
+
+An ideal reference host is a RHEL-family box (dnf/yum) where package-manager
+warnings actually appear — for example the duplicate
+`Repository <name> is listed more than once in the configuration` stderr warnings
+that motivated the stdout-only update parsing. syschecks typically installs at
+`/opt/syschecks/syschecks` with `/bin/syschecks` symlinked to it.
+
+Deploy a test binary without disturbing the running process (atomic replace);
+substitute the endpoint the operator gave you for `$HOST`:
+
+```bash
+HOST=root@<your-test-host>   # provided by the operator
+# Build linux/amd64, then:
+scp bin/syschecks-linux-amd64 "$HOST":/opt/syschecks/syschecks.new
+ssh "$HOST" 'chmod 0755 /opt/syschecks/syschecks.new && \
+  mv /opt/syschecks/syschecks.new /opt/syschecks/syschecks'
+```
+
+Good post-release smoke test: run `syschecks self-update` on that host and confirm
+it pulls the freshly published version, the command still works afterward, and
+`syschecks updates` reports correctly.

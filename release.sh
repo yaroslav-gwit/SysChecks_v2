@@ -6,6 +6,22 @@
 # Creates GitHub releases with built binaries, checksums, and release notes.
 # Requires: GitHub CLI (gh), Docker (for portable builds), Git
 # ============================================================================
+#
+# BEFORE YOU RELEASE (full playbook: AgentDocs/RELEASING.md):
+#   1. Run the E2E tests in AgentDocs/E2E_TESTING.md; make sure they pass.
+#   2. Ensure `go test ./...` and `go vet ./...` are green.
+#   3. Commit and `git push origin main` FIRST — this script only tags HEAD and
+#      pushes the tag; it does not commit or push the branch.
+#   4. Pick the version (SemVer: feature -> minor, fix-only -> patch) and update
+#      CHANGELOG.md (dated ## [X.Y.Z] section + compare links at the bottom).
+#   5. Write a friendly release intro (do NOT ship the generic fallback):
+#        export RELEASE_INTRO="In this release we're excited to ..."   (preferred)
+#      or create release-notes/vX.Y.Z.md. See generate_release_notes() below.
+#   6. Dry run: ./release.sh -n X.Y.Z   then real: ./release.sh -f X.Y.Z
+#      (-f is needed because untracked .lastplane/ files make the tree look dirty)
+#   AFTER: verify the GitHub release body (friendly intro, no stray log lines,
+#   correct compare link) and smoke-test `syschecks self-update` on a real host.
+# ============================================================================
 
 set -eo pipefail
 

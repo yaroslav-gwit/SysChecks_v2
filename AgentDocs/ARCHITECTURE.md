@@ -38,7 +38,6 @@
 ### `main` package (main.go)
 - Single entry point
 - Delegates immediately to `cmd.Execute()`
-- Contains unused `IamRootCheck()` function (candidate for removal)
 
 ### `cmd` package
 Primary command implementations using Cobra CLI framework.
@@ -63,9 +62,11 @@ Primary command implementations using Cobra CLI framework.
 - **Purpose**: Detect available system and security updates
 - **Key struct**: `systemUpdatesStruct` - Update counts and lists
 - **Key functions**:
-  - `detectOs()` - Identifies package manager (apt/yum/dnf)
   - `dnfCheck()` / `yumCheck()` / `debCheck()` - Distro-specific update checking
+    (OS/package-manager detection lives in `package_manager.go`)
   - `systemUpdates()` - Unified update checking with caching
+  - Parsers read command **stdout only**, so package-manager warnings printed to
+    stderr cannot be counted as packages
 - **Caching**: Results stored in `/tmp/syscheck_updates.json`
 
 #### apply_updates.go
@@ -83,19 +84,37 @@ Primary command implementations using Cobra CLI framework.
   - Kernel reboot status
   - Available updates
 
+#### package_manager.go
+- **Purpose**: Package-manager abstraction shared by update/apply/kernel logic
+- **Key items**:
+  - `detectOs()` - Identifies the distro family and package manager (deb/dnf/yum)
+  - `getPackageManager()` - Returns the backend used to check/apply updates
+  - `runCommandWithTimeoutCombined()` / `runCommandWithTimeoutStdout()` - Command
+    execution helpers; the stdout-only variant keeps package-manager warnings on
+    stderr out of parsed package lists
+
 #### cron.go
 - **Purpose**: Manage cron jobs for automated tasks
 - **Subcommands**:
   - `cron init` - Create update cache cron job
   - `cron updates` - Enable automatic security/system updates
+  - `cron autoupdate` - Schedule `self-update` (`--disable` removes it)
+
+#### self_update.go
+- **Purpose**: Update the binary in place from the latest GitHub release
+- **Behavior**: Queries the GitHub API, downloads the `syschecks-<os>-<arch>`
+  asset, verifies its SHA-256, and atomically replaces the running executable
+  (resolving symlinks, preserving mode/ownership); no-op when already current
+- **Flags**: `--check` (report only), `--force` (reinstall same version)
 
 #### zabbix.go
 - **Purpose**: Integrate with Zabbix monitoring agent
 - **Action**: Modifies Zabbix agent config to add UserParameter
 
 #### sysinfo.go / userinfo.go
-- Lightweight commands for system/user information
-- `userinfo` appears to be a stub (returns empty array)
+- `sysinfo` - Reports host IP addresses as JSON
+- `userinfo` - Lists real users with login state, password status, last login,
+  and source; supports `--json`, `--json-pretty`, and `--all`
 
 #### version.go
 - Version string management with build-time injection
@@ -113,6 +132,7 @@ Primary command implementations using Cobra CLI framework.
 - Cron job template strings
 - File path constants for cron jobs
 - `CacheCreate()`, `SecurityUpdates()`, `SystemUpdates()` - Write cron files
+- `AutoUpdateEnable()` / `AutoUpdateDisable()` - Manage the `self-update` cron job
 
 #### zabbixInit.go
 - `ZabbixInit()` - Modifies Zabbix agent configuration file
