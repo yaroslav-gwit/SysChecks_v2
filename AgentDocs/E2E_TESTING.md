@@ -11,15 +11,18 @@ Validate every user-facing command and integration:
 - Build, version metadata, help, and shell completion
 - OS display name detection used by `syschecks banner`
 - `banner` and `banner --no-emojies`
+- Banner disk warnings, user/session counts, version, self-update state, and OS-update mode
 - `sysinfo`
 - `userinfo`
 - `kernel` reboot checks
 - `kernel cleanup`
+- `kernel cleanup --execute` (disposable VMs only)
 - `updates` fresh checks, cached checks, and cache creation
 - `apply-updates` security-only, full-system, package lock, and `--ignore-lock-file`
 - `cron init`
 - `cron updates --security`
 - `cron updates --system`
+- `cron kernels`
 - `zabbix init`
 - Supported package managers: apt, dnf, yum
 
@@ -111,6 +114,13 @@ If the image does not include `bash`, use:
 sh -lc 'set -eu; syschecks version; syschecks --help'
 ```
 
+The non-destructive v1.2 banner, user-login, kernel-count, and cron-cleanup smoke
+suite can be run in any supported container with:
+
+```bash
+SYSCHECKS_BIN=/usr/local/bin/syschecks AgentDocs/e2e-banner-maintenance.sh
+```
+
 For CentOS 7 containers, rewrite EOL repos before update tests:
 
 ```bash
@@ -199,6 +209,7 @@ Run in containers and at least one VM:
 ```bash
 syschecks banner
 syschecks banner --no-emojies
+syschecks banner --all
 ```
 
 Pass criteria:
@@ -214,8 +225,14 @@ Pass criteria:
   - `System uptime:`
   - `CPU Info:`
   - `RAM Info`
-  - `Kernel reboot status`
-  - `Update status`
+- The top-right border includes the installed version and `self-update: ON` or `OFF`.
+- `Logged-in users:` appears only when more than one unique user is active.
+- Kernel status appears only when a reboot is required or more than six kernels are installed; the installed count appears only for the latter warning.
+- Update status appears only for disabled/conflicting automation, non-zero update counts, or a stale cache.
+- `Automatic OS updates:` is silent for a valid enabled mode; conflict/off are reported in red.
+- Zero-update confirmation lines are never shown.
+- `--all` restores healthy user, disk, kernel, automation, update-count, and cache details for debugging.
+- Healthy writable filesystems produce no `Low disk space` section; filesystems below 10% available produce one line per affected backing source.
 - `--no-emojies` output contains no emoji glyphs before labels.
 - If `/tmp/syscheck_updates.json` does not exist or is stale, banner reports that the update cache is out-of-date.
 
@@ -422,7 +439,8 @@ syschecks kernel --json-pretty | tee /tmp/kernel.json
 jq -e '
   (.reboot_required | type == "boolean") and
   (.running_kernel | type == "string") and
-  (.latest_installed_kernel | type == "string")
+  (.latest_installed_kernel | type == "string") and
+  (.installed_kernel_count | type == "number")
 ' /tmp/kernel.json
 ```
 
@@ -498,6 +516,9 @@ sudo dnf remove -y <packages>
 # or
 sudo yum remove -y <packages>
 
+# Or exercise the complete execution path after reviewing its preview:
+sudo syschecks kernel cleanup --execute --keep 2
+
 syschecks kernel cleanup --keep 2
 ```
 
@@ -511,33 +532,70 @@ Pass criteria:
 
 Run in disposable containers or VMs as root.
 
+The dashboard itself is read-only and can also be run as a normal user:
+
+```bash
+syschecks cron | tee /tmp/cron-status.txt
+syschecks cron status | tee /tmp/cron-status-explicit.txt
+grep -q 'State' /tmp/cron-status.txt
+grep -q 'Schedule' /tmp/cron-status.txt
+grep -q 'Update cache' /tmp/cron-status.txt
+grep -q 'Kernel cleanup' /tmp/cron-status-explicit.txt
+```
+
 ```bash
 rm -f /etc/cron.d/syschecks_cache \
       /etc/cron.d/syschecks_updates_security \
-      /etc/cron.d/syschecks_updates_system
+      /etc/cron.d/syschecks_updates_system \
+      /etc/cron.d/syschecks_kernel_cleanup
 
 syschecks cron init
 test -f /etc/cron.d/syschecks_cache
 stat -c '%a %n' /etc/cron.d/syschecks_cache
 grep -q 'syschecks updates --cache-create' /etc/cron.d/syschecks_cache
+syschecks cron init --disable
+test ! -e /etc/cron.d/syschecks_cache
 
 syschecks cron updates --security
 test -f /etc/cron.d/syschecks_updates_security
 test ! -f /etc/cron.d/syschecks_updates_system
 grep -q 'syschecks apply-updates' /etc/cron.d/syschecks_updates_security
 
-syschecks cron updates --system
+syschecks cron updates --system | tee /tmp/cron-system.txt
 test -f /etc/cron.d/syschecks_updates_system
 test ! -f /etc/cron.d/syschecks_updates_security
 grep -q 'syschecks apply-updates --system' /etc/cron.d/syschecks_updates_system
+grep -q 'Warning: removed conflicting security-only updates cron job' /tmp/cron-system.txt
+
+syschecks cron updates --security | tee /tmp/cron-security.txt
+grep -q 'Warning: removed conflicting full system updates cron job' /tmp/cron-security.txt
+
+if syschecks cron updates --security --system; then
+  echo 'ERROR: contradictory update modes were accepted'
+  exit 1
+fi
+
+syschecks cron updates --disable
+test ! -e /etc/cron.d/syschecks_updates_security
+test ! -e /etc/cron.d/syschecks_updates_system
+
+syschecks cron kernels --keep 4
+test -f /etc/cron.d/syschecks_kernel_cleanup
+grep -q 'syschecks kernel cleanup --execute --keep 4' /etc/cron.d/syschecks_kernel_cleanup
+syschecks cron kernels --disable
+test ! -e /etc/cron.d/syschecks_kernel_cleanup
 ```
 
 Pass criteria:
 
 - Cron files are created with mode `644`.
-- `cron init` creates cache cron and does not require update cron selection.
-- `cron updates --security` removes conflicting system update cron.
-- `cron updates --system` removes conflicting security update cron.
+- `cron init` creates cache cron and `--disable` removes it.
+- `cron updates --security` and `--system` remove the opposite mode and print a warning.
+- Contradictory mode flags are rejected, and `cron updates --disable` removes either mode.
+- Legacy `automatic_*` jobs are detected and removed with visible warnings.
+- `cron` and `cron status` report actual enabled state and configured schedules in server local time.
+- If both automatic update modes are manually present, both rows show `CONFLICT` and a warning is printed.
+- `cron kernels` creates a weekly executable cleanup job and `--disable` removes it.
 - Cron commands reference `syschecks` and expected flags.
 
 Help/no-flag behavior:
@@ -695,6 +753,7 @@ sudo rm -f /tmp/syscheck_updates.json
 sudo rm -f /etc/cron.d/syschecks_cache
 sudo rm -f /etc/cron.d/syschecks_updates_security
 sudo rm -f /etc/cron.d/syschecks_updates_system
+sudo rm -f /etc/cron.d/syschecks_kernel_cleanup
 sudo rm -f /var/log/syschecks_updates.log
 sudo rm -f /etc/profile.d/syschecks_banner.sh
 sudo rm -rf /opt/syschecks/package.lock.json

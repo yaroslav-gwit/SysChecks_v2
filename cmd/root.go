@@ -52,6 +52,7 @@ func init() {
 
 	kernelCmd.AddCommand(kernelCleanupCmd)
 	kernelCleanupCmd.Flags().IntVar(&kernelNumberToKeep, "keep", 4, "Number of kernels to keep (including the running kernel)")
+	kernelCleanupCmd.Flags().BoolVar(&kernelCleanupExecute, "execute", false, "Remove the selected old kernel packages (requires root)")
 
 	rootCmd.AddCommand(updatesCmd)
 	updatesCmd.Flags().BoolVar(&updatesJsonPretty, "json-pretty", false, "Use JSON pretty (human readable) output.")
@@ -60,15 +61,23 @@ func init() {
 
 	rootCmd.AddCommand(bannerCmd)
 	bannerCmd.Flags().BoolVarP(&noEmojies, "no-emojies", "n", false, "Disable emoji output")
+	bannerCmd.Flags().BoolVar(&bannerShowAll, "all", false, "Show all banner details, including healthy and normally suppressed checks")
+	bannerCmd.Flags().Float64Var(&bannerDiskUsedThreshold, "disk-used-threshold", 100-diskFreeWarningPercent, "Warn when a writable filesystem exceeds this used-space percentage")
 
 	rootCmd.AddCommand(cronCmd)
+	cronCmd.AddCommand(cronStatusCmd)
 	cronCmd.AddCommand(cronInitCmd)
+	cronInitCmd.Flags().BoolVar(&cronCacheDisable, "disable", false, "Remove the update-cache refresh cron job")
 	cronCmd.AddCommand(cronUpdatesCmd)
 	cronUpdatesCmd.Flags().BoolVarP(&cronSecurityUpdates, "security", "", false, "Enable automatic security updates (using a cron job)")
 	cronUpdatesCmd.Flags().BoolVarP(&cronSystemUpdates, "system", "", false, "Enable automatic system updates (using a cron job)")
+	cronUpdatesCmd.Flags().BoolVar(&cronUpdatesDisable, "disable", false, "Remove all automatic updates cron jobs")
 	// cronUpdatesCmd.Flags().BoolVarP(&cronSystemUpdatesHold, "system-hold", "", false, "Enable automatic system updates, but hold back docker and Nvidia packages")
 	cronCmd.AddCommand(cronAutoUpdateCmd)
 	cronAutoUpdateCmd.Flags().BoolVar(&cronAutoUpdateDisable, "disable", false, "Remove the auto-update cron job")
+	cronCmd.AddCommand(cronKernelCleanupCmd)
+	cronKernelCleanupCmd.Flags().IntVar(&cronKernelNumberToKeep, "keep", 4, "Number of kernels to retain (minimum 2)")
+	cronKernelCleanupCmd.Flags().BoolVar(&cronKernelCleanupDisable, "disable", false, "Remove the kernel cleanup cron job")
 
 	rootCmd.AddCommand(zabbixCmd)
 	zabbixCmd.AddCommand(zabbixInitCmd)

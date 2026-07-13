@@ -96,8 +96,9 @@ Primary command implementations using Cobra CLI framework.
 #### cron.go
 - **Purpose**: Manage cron jobs for automated tasks
 - **Subcommands**:
-  - `cron init` - Create update cache cron job
-  - `cron updates` - Enable automatic security/system updates
+  - `cron` / `cron status` - Inspect all job states and configured schedules
+  - `cron init` - Create/remove update cache cron job
+  - `cron updates` - Enable one mutually exclusive automatic update mode or disable both
   - `cron autoupdate` - Schedule `self-update` (`--disable` removes it)
 
 #### self_update.go

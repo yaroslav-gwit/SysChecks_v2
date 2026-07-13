@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"syschecks/helpers"
 
 	"github.com/facette/natsort"
 	"github.com/spf13/cobra"
@@ -43,7 +44,8 @@ var (
 )
 
 var (
-	kernelNumberToKeep int
+	kernelNumberToKeep   int
+	kernelCleanupExecute bool
 
 	kernelCleanupCmd = &cobra.Command{
 		Use:     "cleanup",
@@ -97,7 +99,8 @@ type installedKernelsStruct struct {
 func getInstalledKernels() installedKernelsStruct {
 	entries, err := os.ReadDir("/boot")
 	if err != nil {
-		log.Fatalf("Could not read /boot directory: %v", err)
+		log.Printf("Warning: could not read /boot directory: %v", err)
+		return installedKernelsStruct{}
 	}
 
 	var genericKernels []string
@@ -148,6 +151,7 @@ type compareKernelsStruct struct {
 	runningKernel         string
 	latestInstalledKernel string
 	activeKernels         []string
+	installedKernelCount  int
 }
 
 func compareKernels() compareKernelsStruct {
@@ -162,9 +166,16 @@ func compareKernels() compareKernelsStruct {
 		activeKernels = allKernels.genericKernels
 	}
 
+	installedKernelCount := len(allKernels.genericKernels) + len(allKernels.oemKernels)
+	if installedKernelCount == 0 {
+		// Containers and unified-kernel-image systems may not expose vmlinuz files
+		// in /boot, but the running kernel still counts as one installed kernel.
+		installedKernelCount = 1
+	}
 	result := compareKernelsStruct{
-		runningKernel: runningKernel,
-		activeKernels: activeKernels,
+		runningKernel:        runningKernel,
+		activeKernels:        activeKernels,
+		installedKernelCount: installedKernelCount,
 	}
 
 	// Handle edge case: no kernels found
@@ -185,6 +196,7 @@ type kernelJsonOutputStruct struct {
 	RunningKernel          string   `json:"running_kernel,omitempty"`
 	LatestInstalledKernel  string   `json:"latest_installed_kernel,omitempty"`
 	ListOfInstalledKernels []string `json:"list_of_installed_kernels,omitempty"`
+	InstalledKernelCount   int      `json:"installed_kernel_count"`
 }
 
 func kernelJsonOutput() kernelJsonOutputStruct {
@@ -194,11 +206,19 @@ func kernelJsonOutput() kernelJsonOutputStruct {
 		RunningKernel:          input.runningKernel,
 		LatestInstalledKernel:  input.latestInstalledKernel,
 		ListOfInstalledKernels: input.activeKernels,
+		InstalledKernelCount:   input.installedKernelCount,
 	}
 }
 
 // kernelCleanupAction generates cleanup commands for old kernel packages
 func kernelCleanupAction() {
+	if kernelNumberToKeep < 2 {
+		kernelNumberToKeep = 2
+	}
+	if kernelCleanupExecute {
+		helpers.RootUserCheck()
+	}
+
 	osType := detectOs()
 	runningKernel := getRunningKernel()
 	allKernels := getInstalledKernels()
@@ -223,23 +243,37 @@ func kernelCleanupAction() {
 	}
 	fmt.Println()
 
-	cleanupCommands := generateCleanupCommands(oldKernels, osType)
-	if len(cleanupCommands) == 0 {
+	commandName, commandArgs := generateCleanupCommand(oldKernels, osType)
+	if commandName == "" {
 		fmt.Println("# No cleanup commands generated (unsupported OS or no packages found).")
 		return
 	}
 
-	fmt.Println("# Run the following commands to clean up old kernels:")
-	for _, cmd := range cleanupCommands {
-		fmt.Printf("%s\n\n", cmd)
+	cleanupCommand := "sudo " + commandName + " " + strings.Join(commandArgs, " ")
+	if kernelCleanupExecute {
+		fmt.Printf("Executing: %s %s\n", commandName, strings.Join(commandArgs, " "))
+		ctx, cancel := packageCommandTimeout()
+		defer cancel()
+		command := newCommand(ctx, commandName, commandArgs...)
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
+			log.Fatalf("Kernel cleanup failed: %v", err)
+		}
+		fmt.Printf("Kernel cleanup completed; retained at least %d kernels including the running kernel.\n", kernelNumberToKeep)
+		return
 	}
+
+	fmt.Println("# Run the following commands to clean up old kernels:")
+	fmt.Printf("%s\n\n", cleanupCommand)
 }
 
 // getOldKernels returns a list of old kernels that can be removed, keeping the specified number of kernels
 func getOldKernels(runningKernel string, installedKernels []string, numberToKeep int) []string {
-	// Ensure we keep at least the running kernel
-	if numberToKeep < 1 {
-		numberToKeep = 1
+	// Keep both the running kernel and a newer fallback when one exists.
+	if numberToKeep < 2 {
+		numberToKeep = 2
 	}
 
 	// If we have fewer or equal kernels than we want to keep, return empty list
@@ -275,8 +309,8 @@ func getOldKernels(runningKernel string, installedKernels []string, numberToKeep
 }
 
 // generateCleanupCommands creates appropriate package manager commands for kernel cleanup
-func generateCleanupCommands(oldKernels []string, osType detectOsStruct) []string {
-	return getPackageManager(osType).KernelCleanupCommands(oldKernels)
+func generateCleanupCommand(oldKernels []string, osType detectOsStruct) (string, []string) {
+	return getPackageManager(osType).KernelCleanupCommand(oldKernels)
 }
 
 // findDebianPackagesToRemove finds installed packages matching the old kernel versions

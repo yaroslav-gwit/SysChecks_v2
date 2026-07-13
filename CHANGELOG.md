@@ -18,6 +18,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-07-13
+
+### Added
+- Login-banner warnings for writable disk filesystems with less than 10% space available (90% full); healthy filesystems remain silent.
+- Installed-kernel count in both the banner and additive `installed_kernel_count` kernel JSON field, with an amber cleanup warning above six kernels.
+- Logged-in user and session counts in the login banner.
+- Current version and self-update cron status in the banner's top-right edge.
+- Automatic OS-update policy in the banner, distinguishing full-system, security-only, conflicting, and fully disabled schedules; disabled/conflicting states are red.
+- `syschecks kernel cleanup --execute` for guarded, non-shell package removal and `syschecks cron kernels [--keep N|--disable]` for weekly cleanup.
+- Symmetric `--disable` handling for cache refresh and automatic update cron jobs.
+- `syschecks cron` and `syschecks cron status` dashboard with live job state, server-time schedules, management commands, legacy detection, and conflict highlighting.
+- `syschecks banner --all` debugging view that restores healthy and normally suppressed user, disk, kernel, update-policy, update-count, and cache details.
+- Unit coverage for disk mount parsing and filtering, banner header/status rendering, `who`/`last` parsing, and kernel-retention safety.
+
+### Changed
+- Kernel retention now always protects at least the running kernel and a recent fallback.
+- Banner health sections are exception-only: single-user state, healthy kernel/count, enabled OS-update policy, and zero update counts remain hidden.
+- Enabling security-only or full-system update cron now removes the contradictory mode with a visible warning; contradictory flags in one invocation are rejected.
+- Cron reconciliation also removes duplicate legacy `automatic_*` and `/etc/cron.d/syschecks` jobs left by pre-v2 installations.
+- The human-readable `userinfo` table is compact enough for standard SSH terminals; full account/session detail remains available through JSON.
+- Banner rendering no longer requires stdout to be a TTY.
+
+### Fixed
+- Last-login hosts and current session sources are parsed consistently from real `last -w -F` and `who` output.
+- Banner and kernel checks now fall back safely on systems that do not expose `/boot/vmlinuz-*` files.
+
+---
+
 ## [1.1.0] - 2026-07-01
 
 ### Added
@@ -155,7 +183,8 @@ Each release section follows this format:
 
 ---
 
-[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.1...v1.0.2
 [1.0.0]: https://github.com/yaroslav-gwit/SysChecks_v2/releases/tag/v1.0.0

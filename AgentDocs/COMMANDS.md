@@ -5,17 +5,22 @@
 ```
 syschecks
 ├── kernel [--json-pretty]        # Check kernel reboot status
-│   └── cleanup [--keep N]        # Clean up old kernels
+│   └── cleanup [--keep N] [--execute]
+│                                 # Preview or remove old kernels
 ├── updates [--json-pretty] [--cache-create] [--cache-use]
 │                                 # Check for updates
 ├── apply-updates [--system] [--ignore-lock-file]
 │                                 # Apply updates
-├── banner [--no-emojies, -n]     # Display login banner
+├── banner [--all] [--no-emojies, -n] [--disk-used-threshold PERCENT]
+│                                 # Display login banner
 ├── cron                          # Cron job management
-│   ├── init                      # Create cache update cron
-│   ├── updates [--security] [--system]
-│   │                             # Enable automatic updates
-│   └── autoupdate [--disable]    # Schedule syschecks self-update
+│   ├── status                    # Show job state and schedules
+│   ├── init [--disable]          # Manage cache update cron
+│   ├── updates [--security|--system|--disable]
+│   │                             # Manage automatic updates
+│   ├── autoupdate [--disable]    # Schedule syschecks self-update
+│   └── kernels [--keep N] [--disable]
+│                                 # Schedule old-kernel cleanup
 ├── zabbix                        # Zabbix integration
 │   └── init                      # Initialize Zabbix support
 ├── sysinfo                       # Show IP addresses (JSON)
@@ -41,7 +46,8 @@ Check if a kernel reboot is needed. Compares running kernel against installed ke
   "kernel_needs_reboot": true,
   "running_kernel": "5.15.0-91",
   "latest_installed_kernel": "5.15.0-92",
-  "active_kernels": ["5.15.0-91", "5.15.0-92"]
+  "list_of_installed_kernels": ["5.15.0-91", "5.15.0-92"],
+  "installed_kernel_count": 2
 }
 ```
 
@@ -51,10 +57,11 @@ Check if a kernel reboot is needed. Compares running kernel against installed ke
 
 ### `syschecks kernel cleanup`
 
-Generate commands to remove old kernel packages.
+Generate commands to remove old kernel packages, or execute the exact package-manager operation as root.
 
 **Flags:**
 - `--keep N` - Number of kernels to keep (default: 4, including running kernel)
+- `--execute` - Remove selected packages; the running kernel and a recent fallback are always protected
 
 **Aliases:** `clean`, `cl`
 
@@ -99,15 +106,21 @@ Apply pending updates using the system package manager.
 Display a formatted system information banner. Designed for SSH login screens.
 
 **Flags:**
+- `--all` - Show healthy and normally suppressed details, including all writable filesystems
 - `--no-emojies, -n` - Disable emoji characters
+- `--disk-used-threshold PERCENT` - Warn above this used-space percentage (default: 90)
 
 **Displays:**
 - OS name and version
 - Hostname and IP addresses
 - System uptime
+- Number of logged-in users and sessions, only when more than one user is active
 - CPU and RAM information
-- Kernel reboot status
-- Pending update counts
+- Low-space disk warnings only when a writable filesystem is at least 90% full
+- Kernel reboot warning; installed-kernel count only above six
+- Pending update counts, only when non-zero
+- Installed version and self-update state in the top-right border
+- Automatic OS-update problems; fully disabled and conflicting modes are highlighted red while healthy modes stay hidden
 
 **Usage in login:**
 ```bash
@@ -116,9 +129,24 @@ echo '([ -z "$PS1" ] && true) || syschecks banner' >> /etc/profile.d/syschecks_b
 
 ---
 
+### `syschecks cron` / `syschecks cron status`
+
+Display a read-only dashboard of every available SysChecks cron job. The table
+shows whether each job is enabled, disabled, inactive, legacy, or conflicting;
+its configured schedule in server local time; and the relevant management
+command. Disabled jobs show the schedule they will receive when enabled.
+
+If security-only and full-system updates are both active, both table rows are
+marked `CONFLICT` and a remediation warning is printed.
+
+---
+
 ### `syschecks cron init`
 
 Create a cron job to update the syschecks cache periodically.
+
+**Flags:**
+- `--disable` - Remove the update-cache refresh cron job
 
 **Creates:** `/etc/cron.d/syschecks_cache`
 
@@ -137,6 +165,12 @@ Enable automatic updates via cron jobs.
 **Flags:**
 - `--security` - Enable automatic security updates
 - `--system` - Enable automatic system updates
+- `--disable` - Remove both automatic update cron jobs
+
+Security-only and full-system modes are mutually exclusive. Enabling either
+mode removes the other job and prints a warning identifying the removed file.
+Passing more than one mode flag is rejected. Legacy `automatic_*` update jobs
+are removed with warnings when a mode is enabled or disabled.
 
 **Creates:** 
 - `/etc/cron.d/syschecks_updates_security` (for --security)
@@ -162,6 +196,24 @@ Schedule a cron job that keeps syschecks updated to the latest GitHub release.
 **Schedule:** Daily at 3:30 AM (with random delay)
 
 **Log:** `/var/log/syschecks_selfupdate.log`
+
+**Requires:** Root privileges
+
+---
+
+### `syschecks cron kernels`
+
+Schedule weekly removal of old kernel packages.
+
+**Flags:**
+- `--keep N` - Retain at least this many kernels (default: 4; minimum: 2)
+- `--disable` - Remove the kernel-cleanup cron job
+
+**Creates:** `/etc/cron.d/syschecks_kernel_cleanup`
+
+**Schedule:** Sundays at 3:45 AM (with random delay)
+
+**Log:** `/var/log/syschecks_kernel_cleanup.log`
 
 **Requires:** Root privileges
 
@@ -213,11 +265,11 @@ List real system users in a formatted table.
 - Excludes no-login service accounts unless `--all` is set
 
 **Displays:**
-- Username, UID, and shell
+- Username and UID in the compact table; shell and account details in JSON
 - Whether the user currently has active sessions
 - Active session source such as SSH, getty/console, local graphical, terminal, or tmux
 - Password status from `/etc/shadow` when run as root
-- Last login time, TTY, and inferred source from `last -w -F`
+- Last login time, host, TTY, and inferred source from `last -w -F`
 
 **Notes:**
 - Non-root users normally cannot read `/etc/shadow`; password status will be `unknown (requires root)`.

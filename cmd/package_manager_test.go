@@ -2,6 +2,14 @@ package cmd
 
 import "testing"
 
+func TestGetOldKernelsAlwaysKeepsRunningAndNewest(t *testing.T) {
+	installed := []string{"6.1.0", "6.2.0", "6.3.0"}
+	old := getOldKernels("6.1.0", installed, 1)
+	if len(old) != 1 || old[0] != "6.2.0" {
+		t.Fatalf("getOldKernels() = %#v, want only 6.2.0 removable", old)
+	}
+}
+
 func TestReadOsRelease(t *testing.T) {
 	values, err := readOsRelease("testdata/os-release-debian")
 	if err != nil {

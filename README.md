@@ -95,6 +95,8 @@ syschecks kernel --json-pretty
 
 # Old kernel cleanup command generation
 sudo syschecks kernel cleanup --keep 4
+# Execute the reviewed cleanup plan
+sudo syschecks kernel cleanup --execute --keep 4
 
 # Update checks
 sudo syschecks updates --cache-create
@@ -109,14 +111,23 @@ sudo syschecks apply-updates --ignore-lock-file
 # Host/user info
 syschecks banner
 syschecks banner --no-emojies
+syschecks banner --all              # Include healthy/suppressed details
+syschecks banner --disk-used-threshold 90
 syschecks sysinfo
 sudo syschecks userinfo
 sudo syschecks userinfo --json-pretty
 
 # Cron and Zabbix setup
+syschecks cron                     # Show job state and schedules
 sudo syschecks cron init
 sudo syschecks cron updates --security
 sudo syschecks cron autoupdate
+sudo syschecks cron kernels --keep 4
+# Every cron type has a matching removal path
+sudo syschecks cron init --disable
+sudo syschecks cron updates --disable
+sudo syschecks cron autoupdate --disable
+sudo syschecks cron kernels --disable
 sudo syschecks zabbix init
 
 # Self-update from the latest GitHub release
@@ -124,19 +135,24 @@ sudo syschecks self-update --check
 sudo syschecks self-update
 ```
 
+Security-only and full-system update schedules are mutually exclusive. Enabling
+one removes the other—and any legacy duplicate schedule—with a CLI warning.
+
 ## Command Tree
 
 ```text
 syschecks
 ├── kernel [--json-pretty]
-│   └── cleanup [--keep N]
+│   └── cleanup [--keep N] [--execute]
 ├── updates [--json-pretty] [--cache-create] [--cache-use]
 ├── apply-updates [--system] [--ignore-lock-file]
-├── banner [--no-emojies]
+├── banner [--all] [--no-emojies] [--disk-used-threshold PERCENT]
 ├── cron
-│   ├── init
-│   ├── updates [--security|--system]
-│   └── autoupdate [--disable]
+│   ├── status
+│   ├── init [--disable]
+│   ├── updates [--security|--system|--disable]
+│   ├── autoupdate [--disable]
+│   └── kernels [--keep N] [--disable]
 ├── zabbix
 │   └── init
 ├── sysinfo

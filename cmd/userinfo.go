@@ -62,6 +62,7 @@ type userInfoRecord struct {
 	LastLogin      string `json:"last_login"`
 	LastTTY        string `json:"last_tty,omitempty"`
 	LastSource     string `json:"last_source"`
+	LastHost       string `json:"last_host,omitempty"`
 }
 
 type passwdEntry struct {
@@ -116,6 +117,7 @@ func collectUserInfo(includeAll bool) []userInfoRecord {
 			LastLogin:      lastLogin.when,
 			LastTTY:        lastLogin.tty,
 			LastSource:     lastLogin.source,
+			LastHost:       lastLogin.host,
 		})
 	}
 
@@ -286,9 +288,12 @@ func readActiveSessions() map[string][]string {
 	if err != nil {
 		return map[string][]string{}
 	}
+	return parseWhoOutput(string(out))
+}
 
+func parseWhoOutput(output string) map[string][]string {
 	sessions := make(map[string][]string)
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -296,9 +301,11 @@ func readActiveSessions() map[string][]string {
 		username := fields[0]
 		tty := fields[1]
 		host := ""
-		if len(fields) >= 5 {
-			host = strings.Join(fields[4:], " ")
-			host = strings.Trim(host, "()")
+		if len(fields) >= 3 {
+			lastField := fields[len(fields)-1]
+			if strings.HasPrefix(lastField, "(") && strings.HasSuffix(lastField, ")") {
+				host = strings.Trim(lastField, "()")
+			}
 		}
 		source := classifyLoginSource(tty, host)
 		session := tty
@@ -314,11 +321,14 @@ func readActiveSessions() map[string][]string {
 
 func lastLoginForUser(username string) loginEntry {
 	out, err := exec.Command("last", "-w", "-F", username).Output()
-	if err != nil {
+	if err != nil && len(out) == 0 {
 		return loginEntry{when: "never", source: "never"}
 	}
+	return parseLastLoginOutput(username, string(out))
+}
 
-	for _, line := range strings.Split(string(out), "\n") {
+func parseLastLoginOutput(username string, output string) loginEntry {
+	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.Contains(line, "wtmp begins") {
 			continue
@@ -386,35 +396,48 @@ func classifyLoginSource(tty string, host string) string {
 }
 
 func printUserInfoTable(users []userInfoRecord) {
-	headers := []string{"User", "UID", "Active", "Active source", "Password", "Last login", "Last source", "Shell"}
+	// Keep the default table compact enough for a standard 80-column SSH
+	// terminal. The complete session and account details remain in JSON output.
+	headers := []string{"User", "UID", "Active", "Password", "Last login", "Source"}
 	rows := make([][]string, 0, len(users))
 
 	for _, user := range users {
 		active := "no"
-		activeSource := "-"
 		if user.Active {
 			active = fmt.Sprintf("yes (%d)", user.ActiveSessions)
-			activeSource = user.ActiveSources
 		}
 
-		lastLogin := user.LastLogin
-		if user.LastTTY != "" {
-			lastLogin += " " + user.LastTTY
+		passwordStatus := user.PasswordStatus
+		if strings.HasPrefix(passwordStatus, "unknown") {
+			passwordStatus = "unknown"
+		}
+
+		lastSource := user.LastSource
+		if user.LastHost != "" && user.LastSource == "ssh" {
+			lastSource = shortenCell(lastSource+"@"+user.LastHost, 20)
 		}
 
 		rows = append(rows, []string{
 			user.Username,
 			strconv.Itoa(user.UID),
 			active,
-			activeSource,
-			user.PasswordStatus,
-			lastLogin,
-			user.LastSource,
-			user.Shell,
+			passwordStatus,
+			user.LastLogin,
+			lastSource,
 		})
 	}
 
 	printTable(headers, rows)
+}
+
+func shortenCell(value string, maximum int) string {
+	if len(value) <= maximum {
+		return value
+	}
+	if maximum <= 3 {
+		return value[:maximum]
+	}
+	return value[:maximum-3] + "..."
 }
 
 func printTable(headers []string, rows [][]string) {

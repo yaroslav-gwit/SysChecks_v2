@@ -192,7 +192,7 @@ type packageManager interface {
 	Name() string
 	CheckUpdates() systemUpdatesStruct
 	ApplyCommand(ctx context.Context, pkg string) *exec.Cmd
-	KernelCleanupCommands(oldKernels []string) []string
+	KernelCleanupCommand(oldKernels []string) (string, []string)
 }
 
 func getPackageManager(osType detectOsStruct) packageManager {
@@ -239,12 +239,12 @@ func (aptPackageManager) ApplyCommand(ctx context.Context, pkg string) *exec.Cmd
 	return newCommand(ctx, "apt-get", "install", "-y", pkg)
 }
 
-func (aptPackageManager) KernelCleanupCommands(oldKernels []string) []string {
+func (aptPackageManager) KernelCleanupCommand(oldKernels []string) (string, []string) {
 	packages := findDebianPackagesToRemove(oldKernels)
 	if len(packages) == 0 {
-		return nil
+		return "", nil
 	}
-	return []string{"sudo apt purge -y " + strings.Join(packages, " ")}
+	return "apt-get", append([]string{"purge", "-y"}, packages...)
 }
 
 type rpmPackageManager struct {
@@ -266,12 +266,12 @@ func (p rpmPackageManager) ApplyCommand(ctx context.Context, pkg string) *exec.C
 	return newCommand(ctx, p.binary, "update", "-y", pkg)
 }
 
-func (p rpmPackageManager) KernelCleanupCommands(oldKernels []string) []string {
+func (p rpmPackageManager) KernelCleanupCommand(oldKernels []string) (string, []string) {
 	packages := findRPMPackagesToRemove(oldKernels)
 	if len(packages) == 0 {
-		return nil
+		return "", nil
 	}
-	return []string{"sudo " + p.binary + " remove -y " + strings.Join(packages, " ")}
+	return p.binary, append([]string{"remove", "-y"}, packages...)
 }
 
 // runCommandWithTimeout executes a command with a context timeout.
