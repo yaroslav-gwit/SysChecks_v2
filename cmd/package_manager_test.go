@@ -150,6 +150,63 @@ func TestParseUpdateinfoSecurityOutput(t *testing.T) {
 	}
 }
 
+// DNF5 prints five columns and the trailing "Issued" value splits into a date and a time,
+// so taking the last whitespace field collects timestamps instead of packages.
+func TestParseUpdateinfoSecurityOutputDnf5(t *testing.T) {
+	input := "Name                   Type     Severity              Package              Issued\n" +
+		"FEDORA-2026-0c3f6c7c67 security Important     cjson-1.7.19-1.fc44.x86_64 2026-07-11 01:06:30\n" +
+		"FEDORA-2026-0e46c91ccf security Important    libssh-0.12.1-1.fc44.x86_64 2026-07-23 01:18:29\n" +
+		"FEDORA-2026-0e46c91ccf security Important libssh-config-0.12.1-1.fc44.noarch 2026-07-23 01:18:29\n" +
+		"FEDORA-2026-25954ebccf security None   OpenImageIO-1:3.1.15.0-1.fc44.x86_64 2026-07-11 01:06:30\n"
+
+	got := parseUpdateinfoSecurityOutput(input)
+	want := []string{
+		"cjson-1.7.19-1.fc44.x86_64",
+		"libssh-0.12.1-1.fc44.x86_64",
+		"libssh-config-0.12.1-1.fc44.noarch",
+		"OpenImageIO-1:3.1.15.0-1.fc44.x86_64",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d updates, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// A repoquery run that lost its record separator must yield nothing so the check-update
+// fallback runs, rather than one truncated entry that masks ~170 missing updates.
+func TestParseDnfRepoqueryOutputRunOnLine(t *testing.T) {
+	input := "ImageMagick\t1\t7.1.2.27\t1.fc44\tx86_64\tupdatesImageMagick-libs\t1\t7.1.2.27\t1.fc44\tx86_64\tupdates"
+
+	if got := parseDnfRepoqueryOutput(input); len(got) != 0 {
+		t.Fatalf("got %d updates from a run-on line, want 0: %#v", len(got), got)
+	}
+}
+
+// The format string carries its own newline, which DNF4 doubles up; blank lines are skipped.
+func TestParseDnfRepoqueryOutputBlankLines(t *testing.T) {
+	input := "openssl-libs\t1\t3.2.4\t1.fc40\tx86_64\tupdates\n\ndnf\t0\t4.23.0\t1.fc40.1\tnoarch\tupdates\n\n"
+
+	got := parseDnfRepoqueryOutput(input)
+	want := []string{
+		"openssl-libs.x86_64 1:3.2.4-1.fc40 updates",
+		"dnf.noarch 4.23.0-1.fc40.1 updates",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d updates, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestFormatAptInstLine(t *testing.T) {
 	line := "Inst libssl3 [3.0.2-0ubuntu1.23] (3.0.2-0ubuntu1.25 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [amd64])"
 	want := "libssl3 [3.0.2-0ubuntu1.23] (3.0.2-0ubuntu1.25 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [amd64])"

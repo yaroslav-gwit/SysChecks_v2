@@ -2,43 +2,126 @@
 
 ## Command Tree
 
+Commands are `syschecks <resource> <verb>`. Every pre-v1.3.0 spelling still resolves as a
+hidden, deprecated alias; `syschecks migrate` rewrites generated files that use them.
+
 ```
-syschecks
-├── kernel [--json-pretty]        # Check kernel reboot status
-│   └── cleanup [--keep N] [--execute]
-│                                 # Preview or remove old kernels
-├── updates [--json-pretty] [--cache-create] [--cache-use]
-│                                 # Check for updates
-├── apply-updates [--system] [--ignore-lock-file]
-│                                 # Apply updates
-├── banner [--all] [--no-emojies, -n] [--disk-used-threshold PERCENT]
-│                                 # Display login banner
-├── cron                          # Cron job management
-│   ├── status                    # Show job state and schedules
-│   ├── init [--disable]          # Manage cache update cron
-│   ├── updates [--security|--system|--disable]
-│   │                             # Manage automatic updates
-│   ├── autoupdate [--disable]    # Schedule syschecks self-update
-│   └── kernels [--keep N] [--disable]
-│                                 # Schedule old-kernel cleanup
+syschecks [-o|--output text|json|json-pretty]     # global, tab-completable
+├── banner [--all] [--no-emojis, -n] [--disk-used-threshold PERCENT]
+│                                 # Login banner; -o json reports every check
+├── updates                       # Update resource
+│   ├── check [--refresh|--cached]
+│   │                             # Report available updates (cached by default)
+│   ├── apply [--scope security|system] [--dry-run] [--ignore-locks]
+│   │         [--delay DURATION] [--no-delay]
+│   │                             # Install updates
+│   ├── refresh                   # Refresh the update cache
+│   └── cache refresh             # Same, longer spelling
+├── kernel                        # Kernel resource
+│   ├── status                    # Reboot-required check (JSON)
+│   └── cleanup [--keep N] [--dry-run] [--yes, -y]
+│                                 # REMOVES old kernels (--dry-run to preview)
+├── users                         # User resource
+│   └── list [--all]              # Users and who is logged in
+├── schedule                      # Scheduled jobs (was: cron)
+│   ├── list                      # Job state and schedules
+│   ├── enable <job> [--scope security|system] [--keep N]
+│   └── disable <job>|all
+│                                 # Jobs: updates, self-update,
+│                                 #       kernel-cleanup, update-cache
+├── migrate [--apply]             # Rewrite cron/Zabbix files using old names
 ├── zabbix                        # Zabbix integration
 │   └── init                      # Initialize Zabbix support
-├── sysinfo                       # Show IP addresses (JSON)
-├── userinfo [--json] [--json-pretty] [--all]
-│                                 # List real users and login state
 ├── self-update [--check] [--force]
 │                                 # Update from the latest GitHub release
 └── version [--verbose, -v]       # Show version info
 ```
 
+## Output format
+
+`-o, --output` is a persistent flag available on every command, replacing the per-command
+`--json` and `--json-pretty` booleans.
+
+| Value | Meaning |
+|-------|---------|
+| `text` | Human-readable |
+| `json` | Compact JSON |
+| `json-pretty` | Indented JSON |
+
+Each command keeps its historical default, so callers that pass nothing see what they always
+saw: `updates check` and `kernel status` default to `json`; `banner` and `users list` default
+to `text`.
+
+Values complete with `<TAB>`, as do `schedule enable|disable` job names and `--scope` values.
+The installers write the completion script to `/etc/bash_completion.d/syschecks` and
+regenerate it on every upgrade.
+
+## Deprecated spellings
+
+All still work, and emit a deprecation notice on **stderr** so JSON on stdout stays clean.
+
+| Old | New |
+|-----|-----|
+| `apply-updates` | `updates apply --scope security` |
+| `apply-updates --system` / `-s` | `updates apply --scope system` |
+| `apply-updates --ignore-lock-file` / `-i` | `updates apply --ignore-locks` |
+| `updates` | `updates check` |
+| `updates --cache-create` | `updates refresh` |
+| `updates --cache-use=false` | `updates check --refresh` |
+| `kernel` | `kernel status` |
+| `kernel cleanup --execute` | `kernel cleanup` |
+| `userinfo` | `users list` |
+| `sysinfo` | `banner --output json` |
+| `cron` | `schedule` |
+| `cron status` | `schedule list` |
+| `cron init [--disable]` | `schedule enable\|disable update-cache` |
+| `cron updates --security\|--system` | `schedule enable updates --scope security\|system` |
+| `cron updates --disable` | `schedule disable updates` |
+| `cron autoupdate [--disable]` | `schedule enable\|disable self-update` |
+| `cron kernels [--disable]` | `schedule enable\|disable kernel-cleanup` |
+| `--json` / `--json-pretty` | `--output json` / `--output json-pretty` |
+| `banner --no-emojies` | `banner --no-emojis` |
+
+## Breaking change: `kernel cleanup`
+
+`kernel cleanup` **removes** old kernel packages by default. It previously previewed unless
+`--execute` was passed.
+
+- `--dry-run` gives the old preview behaviour.
+- `--execute` is accepted and ignored; existing cron files keep working.
+- Run interactively without `--yes`, it lists the packages and asks for confirmation. Only
+  `y`/`yes` proceeds; a blank line, EOF, or an unreadable stdin aborts.
+- Unattended runs (no TTY, i.e. cron) proceed without prompting.
+
+## Migration
+
+Generated files on already-deployed hosts embed literal command strings, so upgrading the
+binary is not enough:
+
+- `/etc/cron.d/syschecks_*` and legacy `/etc/cron.d/automatic_*` job files
+- `/etc/zabbix/zabbix_agentd.conf` / `zabbix_agent2.conf` `UserParameter` lines
+
+```bash
+syschecks migrate           # report only; exits non-zero while changes are pending
+syschecks migrate --apply   # rewrite
+```
+
+Report-only is the default so nothing is rewritten unattended. `auto-install.sh` and
+`install-offline.sh` call `syschecks migrate --apply` as their final step. Re-running is a
+no-op, and a fresh install never needs it.
+
+This is a command rather than a check inside the binary on purpose: `banner` runs on every
+SSH login, and spending even 100-200 ms there to fix a one-time problem would tax every
+login forever.
+
 ## Detailed Command Reference
 
-### `syschecks kernel`
+### `syschecks kernel status`
 
 Check if a kernel reboot is needed. Compares running kernel against installed kernels.
 
 **Flags:**
-- `--json-pretty` - Format JSON output with indentation
+- `--output json-pretty` - Format JSON output with indentation
 
 **Output:** JSON object with:
 ```json
@@ -57,24 +140,27 @@ Check if a kernel reboot is needed. Compares running kernel against installed ke
 
 ### `syschecks kernel cleanup`
 
-Generate commands to remove old kernel packages, or execute the exact package-manager operation as root.
+**Removes** old kernel packages. The running kernel and a recent fallback are always protected.
 
 **Flags:**
 - `--keep N` - Number of kernels to keep (default: 4, including running kernel)
-- `--execute` - Remove selected packages; the running kernel and a recent fallback are always protected
+- `--dry-run` - Show what would be removed without removing anything
+- `--yes`, `-y` - Skip the interactive confirmation
+- `--execute` - Deprecated; accepted and ignored (removal is now the default)
+
+**Requires:** Root privileges, unless `--dry-run`
 
 **Aliases:** `clean`, `cl`
 
 ---
 
-### `syschecks updates`
+### `syschecks updates check`
 
 Check for available system and security updates.
 
 **Flags:**
-- `--json-pretty` - Pretty-print JSON output
-- `--cache-create` - Create cache file for later use (requires root)
-- `--cache-use` - Use cached results (default: true)
+- `--cached` - Read the cached report (default)
+- `--refresh` - Query the package manager directly, refreshing repository health too
 
 **Output:** JSON object with update information
 
@@ -84,7 +170,7 @@ Check for available system and security updates.
 
 ---
 
-### `syschecks apply-updates`
+### `syschecks updates apply`
 
 Apply pending updates using the system package manager.
 
@@ -129,7 +215,7 @@ echo '([ -z "$PS1" ] && true) || syschecks banner' >> /etc/profile.d/syschecks_b
 
 ---
 
-### `syschecks cron` / `syschecks cron status`
+### `syschecks schedule` / `syschecks schedule list`
 
 Display a read-only dashboard of every available SysChecks cron job. The table
 shows whether each job is enabled, disabled, inactive, legacy, or conflicting;
@@ -141,12 +227,14 @@ marked `CONFLICT` and a remediation warning is printed.
 
 ---
 
-### `syschecks cron init`
+### `syschecks schedule enable|disable update-cache`
 
-Create a cron job to update the syschecks cache periodically.
+Schedule periodic refreshes of the update cache that the banner and monitoring read.
 
-**Flags:**
-- `--disable` - Remove the update-cache refresh cron job
+```bash
+syschecks schedule enable update-cache
+syschecks schedule disable update-cache
+```
 
 **Creates:** `/etc/cron.d/syschecks_cache`
 
@@ -158,13 +246,19 @@ Create a cron job to update the syschecks cache periodically.
 
 ---
 
-### `syschecks cron updates`
+### `syschecks schedule enable|disable updates`
 
-Enable automatic updates via cron jobs.
+Schedule automatic update installation. `--scope` is required: the command never guesses a
+host's update policy.
+
+```bash
+syschecks schedule enable updates --scope security
+syschecks schedule enable updates --scope system
+syschecks schedule disable updates
+```
 
 **Flags:**
-- `--security` - Enable automatic security updates
-- `--system` - Enable automatic system updates
+- `--scope security|system` - Required. Which updates to install automatically
 - `--disable` - Remove both automatic update cron jobs
 
 Security-only and full-system modes are mutually exclusive. Enabling either
@@ -184,7 +278,7 @@ are removed with warnings when a mode is enabled or disabled.
 
 ---
 
-### `syschecks cron autoupdate`
+### `syschecks schedule enable|disable self-update`
 
 Schedule a cron job that keeps syschecks updated to the latest GitHub release.
 
@@ -201,7 +295,7 @@ Schedule a cron job that keeps syschecks updated to the latest GitHub release.
 
 ---
 
-### `syschecks cron kernels`
+### `syschecks schedule enable|disable kernel-cleanup`
 
 Schedule weekly removal of old kernel packages.
 
@@ -239,7 +333,7 @@ UserParameter=syschecks[*],syschecks $1
 
 ---
 
-### `syschecks sysinfo`
+### `syschecks banner --output json` (replaces `sysinfo`)
 
 Output system IP addresses in JSON format.
 
@@ -250,13 +344,13 @@ Output system IP addresses in JSON format.
 
 ---
 
-### `syschecks userinfo`
+### `syschecks users list`
 
 List real system users in a formatted table.
 
 **Flags:**
 - `--json` - Output user information as compact JSON
-- `--json-pretty` - Output user information as formatted JSON
+- `--output json-pretty` - Output user information as formatted JSON
 - `--all` - Include system and no-login users
 
 **Default filtering:**

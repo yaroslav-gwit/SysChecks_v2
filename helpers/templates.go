@@ -43,8 +43,8 @@ SHELL=/bin/bash
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 MAILTO=root
 
-@reboot       root  sleep ${RANDOM:0:2} && syschecks updates --cache-create
-7 */12 * * *  root  sleep ${RANDOM:0:2} && syschecks updates --cache-create
+@reboot       root  sleep ${RANDOM:0:2} && syschecks updates refresh
+7 */12 * * *  root  sleep ${RANDOM:0:2} && syschecks updates refresh
 `
 	if err := os.WriteFile(CACHE_JOB, []byte(cronTemplate), CRON_FILE_PERMS); err != nil {
 		log.Fatalf("Error writing cron file %s: %v", CACHE_JOB, err)
@@ -74,7 +74,7 @@ SHELL=/bin/bash
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 MAILTO=root
 
-COMMAND="syschecks apply-updates"
+COMMAND="syschecks updates apply --scope security"
 LOG_FILE="/var/log/syschecks_updates.log"
 15 4 * * *  root  sleep ${RANDOM:0:2} && touch ${LOG_FILE} && ${COMMAND} 2>&1 | tee -a ${LOG_FILE}
 `
@@ -99,7 +99,7 @@ SHELL=/bin/bash
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 MAILTO=root
 
-COMMAND="syschecks apply-updates --system"
+COMMAND="syschecks updates apply --scope system"
 LOG_FILE="/var/log/syschecks_updates.log"
 15 4 * * *  root  sleep ${RANDOM:0:2} && touch ${LOG_FILE} && ${COMMAND} 2>&1 | tee -a ${LOG_FILE}
 `
@@ -155,7 +155,7 @@ SHELL=/bin/bash
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 MAILTO=root
 
-COMMAND="syschecks kernel cleanup --execute --keep %d"
+COMMAND="syschecks kernel cleanup --yes --keep %d"
 LOG_FILE="/var/log/syschecks_kernel_cleanup.log"
 45 3 * * 0  root  sleep ${RANDOM:0:2} && touch ${LOG_FILE} && ${COMMAND} 2>&1 | tee -a ${LOG_FILE}
 `, numberToKeep)

@@ -1,8 +1,9 @@
 package cmd
 
 import (
-	"encoding/json"
+	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -44,15 +45,33 @@ var (
 )
 
 var (
+	kernelStatusCmd = &cobra.Command{
+		Use:   "status",
+		Short: "Report kernel version and whether a reboot is required",
+		Long:  `Report the running kernel, the latest installed kernel, and whether a reboot is required.`,
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			kernel()
+		},
+	}
+)
+
+var (
 	kernelNumberToKeep   int
 	kernelCleanupExecute bool
+	kernelCleanupDryRun  bool
+	kernelCleanupYes     bool
 
 	kernelCleanupCmd = &cobra.Command{
 		Use:     "cleanup",
-		Short:   "Cleanup old kernel packages",
-		Long:    `Kernel cleanup command. Returns commands to clean up old kernel packages.`,
+		Short:   "Remove old kernel packages",
 		Args:    cobra.NoArgs,
 		Aliases: []string{"clean", "cl"},
+		Long: `Remove old kernel packages, always retaining the running kernel and recent fallbacks.
+
+This command REMOVES packages. Use --dry-run to preview what would be removed without
+touching the system. Run interactively without --yes and it will list the packages and ask
+for confirmation first; unattended runs (cron) proceed without prompting.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			kernelCleanupAction()
 		},
@@ -60,21 +79,7 @@ var (
 )
 
 func kernel() {
-	output := kernelJsonOutput()
-
-	var jsonOut []byte
-	var err error
-
-	if kernelJsonPretty {
-		jsonOut, err = json.MarshalIndent(output, "", "   ")
-	} else {
-		jsonOut, err = json.Marshal(output)
-	}
-
-	if err != nil {
-		log.Fatalf("Error marshaling kernel output: %v", err)
-	}
-	fmt.Println(string(jsonOut))
+	emitJSON(kernelJsonOutput(), resolveOutput(outputJSON, false, kernelJsonPretty))
 }
 
 // getRunningKernel reads the running kernel version from /proc/version
@@ -215,7 +220,9 @@ func kernelCleanupAction() {
 	if kernelNumberToKeep < 2 {
 		kernelNumberToKeep = 2
 	}
-	if kernelCleanupExecute {
+	// Inverted in v1.3.0: cleanup now removes by default and --dry-run previews. The old
+	// --execute is accepted and ignored so existing cron files keep working unchanged.
+	if !kernelCleanupDryRun {
 		helpers.RootUserCheck()
 	}
 
@@ -250,23 +257,47 @@ func kernelCleanupAction() {
 	}
 
 	cleanupCommand := "sudo " + commandName + " " + strings.Join(commandArgs, " ")
-	if kernelCleanupExecute {
-		fmt.Printf("Executing: %s %s\n", commandName, strings.Join(commandArgs, " "))
-		ctx, cancel := packageCommandTimeout()
-		defer cancel()
-		command := newCommand(ctx, commandName, commandArgs...)
-		command.Stdin = os.Stdin
-		command.Stdout = os.Stdout
-		command.Stderr = os.Stderr
-		if err := command.Run(); err != nil {
-			log.Fatalf("Kernel cleanup failed: %v", err)
-		}
-		fmt.Printf("Kernel cleanup completed; retained at least %d kernels including the running kernel.\n", kernelNumberToKeep)
+	if kernelCleanupDryRun {
+		fmt.Println("# Dry run — nothing was removed. The equivalent command is:")
+		fmt.Printf("%s\n\n", cleanupCommand)
 		return
 	}
 
-	fmt.Println("# Run the following commands to clean up old kernels:")
-	fmt.Printf("%s\n\n", cleanupCommand)
+	// A human who typed `kernel cleanup` expecting the old preview behaviour gets a prompt
+	// rather than a surprise. Cron has no TTY and proceeds.
+	if !kernelCleanupYes && runningInteractively() && !confirmKernelCleanup(os.Stdin, len(oldKernels)) {
+		fmt.Println("Aborted. Nothing was removed.")
+		return
+	}
+
+	fmt.Printf("Executing: %s %s\n", commandName, strings.Join(commandArgs, " "))
+	ctx, cancel := packageCommandTimeout()
+	defer cancel()
+	command := newCommand(ctx, commandName, commandArgs...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		log.Fatalf("Kernel cleanup failed: %v", err)
+	}
+	fmt.Printf("Kernel cleanup completed; retained at least %d kernels including the running kernel.\n", kernelNumberToKeep)
+}
+
+// confirmKernelCleanup requires an explicit yes. Every other answer — including a blank
+// line, EOF, or an unreadable stdin — aborts, because this guards package removal.
+func confirmKernelCleanup(in io.Reader, count int) bool {
+	fmt.Printf("Remove %d old kernel package set(s)? [y/N]: ", count)
+	answer, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && answer == "" {
+		fmt.Println()
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 // getOldKernels returns a list of old kernels that can be removed, keeping the specified number of kernels

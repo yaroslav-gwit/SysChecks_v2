@@ -24,7 +24,12 @@ var (
 	reKernelContinue   = regexp.MustCompile(`Security:\s+kernel-core`)
 	reObsoleteBreak    = regexp.MustCompile(`Obsoleting\s+Packages`)
 	reSrcMatch         = regexp.MustCompile(`\.src$`)
-	reRHSAReplace      = regexp.MustCompile(`^RHSA-\d+:\d+.*?\.`)
+
+	// A full NEVRA: name-[epoch:]version-release.arch. Anchored and hyphen-counted so that
+	// dates ("2026-07-11"), times and column headers can never match.
+	reNEVRA = regexp.MustCompile(`^\S+-[^-\s]+-[^-\s]+\.[A-Za-z0-9_]+$`)
+
+	reRHSAReplace = regexp.MustCompile(`^RHSA-\d+:\d+.*?\.`)
 
 	// Skip patterns for DNF/YUM
 	reSubscriptionMgmt = regexp.MustCompile(`Updating\s+Subscription\s+Management`)
@@ -68,6 +73,14 @@ func checkUpdates(cacheCreate bool, cacheUse bool, jsonPretty bool) {
 	if cacheCreate {
 		helpers.RootUserCheck()
 		result := systemUpdates(false)
+
+		// The file being written *is* the cache, so record that truthfully. Serialising the
+		// placeholder false/false from systemUpdates() would make every consumer that reads
+		// the JSON directly believe the cache is missing and stale.
+		result.CacheExists = true
+		result.CacheUpToDate = true
+		result.CacheDateCreated = time.Now().Format("2006-01-02 15:04:05")
+
 		jsonOut, err := json.Marshal(result)
 		if err != nil {
 			log.Fatalf("Error marshaling updates: %v", err)
@@ -82,20 +95,7 @@ func checkUpdates(cacheCreate bool, cacheUse bool, jsonPretty bool) {
 		return
 	}
 
-	result := systemUpdates(cacheUse)
-	var jsonOut []byte
-	var err error
-
-	if jsonPretty {
-		jsonOut, err = json.MarshalIndent(result, "", "   ")
-	} else {
-		jsonOut, err = json.Marshal(result)
-	}
-
-	if err != nil {
-		log.Fatalf("Error marshaling updates: %v", err)
-	}
-	fmt.Println(string(jsonOut))
+	emitJSON(systemUpdates(cacheUse), resolveOutput(outputJSON, false, jsonPretty))
 }
 
 type systemUpdatesStruct struct {
@@ -105,6 +105,7 @@ type systemUpdatesStruct struct {
 	securityUpdatesAvailable bool
 	systemUpdatesList        []string
 	securityUpdatesList      []string
+	repositoryIssues         []repoIssue
 }
 
 func dnfCheck() systemUpdatesStruct {
@@ -123,14 +124,26 @@ func dnfCheck() systemUpdatesStruct {
 		securityUpdatesList: []string{},
 	}
 
-	// DNF cache refresh
-	if _, exitCode, err := runCommandWithTimeoutCombined(ctx, "dnf", "makecache"); err != nil && exitCode != 100 {
+	// DNF cache refresh. The output is parsed rather than the exit code: DNF5 reports a
+	// failed repository only on stderr and still exits 0 with "Metadata cache created."
+	refreshOut, exitCode, err := runCommandWithTimeoutCombined(ctx, "dnf", "makecache")
+	if err != nil && exitCode != 100 {
 		log.Printf("Warning: DNF cache update: %v", err)
+	}
+	result.repositoryIssues = parseDnfRepoIssues(string(refreshOut))
+	if len(result.repositoryIssues) > 0 {
+		// Only pay for repoinfo when something is already known to be broken; DNF5 errors
+		// carry a URL but no repository ID.
+		infoOut, _, _ := runCommandWithTimeoutStdout(ctx, "dnf", "-q", "repoinfo")
+		result.repositoryIssues = attributeDnfRepoIssues(result.repositoryIssues, string(infoOut))
 	}
 
 	// Query system updates. repoquery gives stable fields and avoids parsing aligned columns.
 	// stdout only: package-manager warnings on stderr must not pollute the parsed list.
-	sysOut, _, _ := runCommandWithTimeoutStdout(ctx, "dnf", "--cacheonly", "-q", "repoquery", "--upgrades", "--latest-limit=1", "--qf", "%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{repoid}")
+	// The trailing newline is required: DNF5 emits the format string verbatim and adds no
+	// record separator of its own, so without it every package runs into the next one.
+	// DNF4 appends its own newline, which only yields harmless blank lines.
+	sysOut, _, _ := runCommandWithTimeoutStdout(ctx, "dnf", "--cacheonly", "-q", "repoquery", "--upgrades", "--latest-limit=1", "--qf", "%{name}\t%{epoch}\t%{version}\t%{release}\t%{arch}\t%{repoid}\n")
 
 	// Query security updates from advisory metadata where available.
 	secOut, _, _ := runCommandWithTimeoutStdout(ctx, "dnf", "--cacheonly", "-q", "updateinfo", "list", "--updates", "--security")
@@ -218,8 +231,11 @@ func parseDnfRepoqueryOutput(output string) []string {
 			continue
 		}
 
+		// Exactly six fields, not "at least six": a run-on line from a package manager that
+		// ignored the record separator would otherwise be silently truncated into one bogus
+		// entry, which is worse than returning nothing and letting check-update take over.
 		fields := strings.Split(line, "\t")
-		if len(fields) < 6 {
+		if len(fields) != 6 {
 			continue
 		}
 
@@ -251,6 +267,19 @@ func parseDnfRepoqueryOutput(output string) []string {
 	return updates
 }
 
+// findNEVRAField returns the last field shaped like a full NEVRA
+// (name[-more]-[epoch:]version-release.arch), or "" if the line holds none. This keeps the
+// security parser independent of how many columns a given dnf/yum release prints, and it
+// discards header rows ("Name Type Severity Package Issued") for free.
+func findNEVRAField(parts []string) string {
+	for i := len(parts) - 1; i >= 0; i-- {
+		if reNEVRA.MatchString(parts[i]) {
+			return parts[i]
+		}
+	}
+	return ""
+}
+
 // parseUpdateinfoSecurityOutput parses dnf/yum updateinfo security advisory output.
 func parseUpdateinfoSecurityOutput(output string) []string {
 	updates := []string{}
@@ -266,8 +295,13 @@ func parseUpdateinfoSecurityOutput(output string) []string {
 		if len(parts) < 3 {
 			continue
 		}
-		pkg := parts[len(parts)-1]
-		if strings.HasSuffix(pkg, ".src") {
+
+		// Locate the package column by shape rather than by position. DNF4 puts the NEVRA
+		// last ("ADVISORY Important/Sec. pkg-1.0-1.el9.x86_64"), DNF5 follows it with an
+		// Issued date that itself splits into two fields ("... pkg-1.0-1.fc44.x86_64
+		// 2026-07-11 01:06:30"), so "last field" silently collects timestamps there.
+		pkg := findNEVRAField(parts)
+		if pkg == "" || strings.HasSuffix(pkg, ".src") {
 			continue
 		}
 
@@ -302,11 +336,14 @@ func debCheck() systemUpdatesStruct {
 		securityUpdatesList: []string{},
 	}
 
-	// APT cache refresh
-	if out, exitCode, err := runCommandWithTimeoutCombined(ctx, "apt-get", "-y", "update"); err != nil && exitCode != 100 {
-		errorValue := strings.TrimSpace(string(out))
+	// APT cache refresh. Parsed rather than trusted to the exit code: apt-get update exits 0
+	// when a repository host stops resolving, and only fails outright on a missing Release.
+	refreshOut, exitCode, err := runCommandWithTimeoutCombined(ctx, "apt-get", "-y", "update")
+	if err != nil && exitCode != 100 {
+		errorValue := strings.TrimSpace(string(refreshOut))
 		log.Printf("Warning: APT cache update: %s (exit code: %d)", errorValue, exitCode)
 	}
+	result.repositoryIssues = parseAptRepoIssues(string(refreshOut))
 
 	// Check all updates using apt-get simulation mode. apt-get has a stable scripting interface; apt does not.
 	sysOut, _, err := runCommandWithTimeoutCombined(ctx, "apt-get", "-s", "-o", "APT::Get::Show-Upgraded=true", "dist-upgrade")
@@ -373,9 +410,11 @@ func yumCheck() systemUpdatesStruct {
 	}
 
 	// YUM cache refresh
-	if _, _, err := runCommandWithTimeoutCombined(ctx, "yum", "makecache", "fast"); err != nil {
+	refreshOut, _, err := runCommandWithTimeoutCombined(ctx, "yum", "makecache", "fast")
+	if err != nil {
 		log.Printf("Warning: YUM cache update: %v", err)
 	}
+	result.repositoryIssues = parseDnfRepoIssues(string(refreshOut))
 
 	// Check system updates (stdout only; stderr warnings must not be parsed as packages).
 	sysOut, _, _ := runCommandWithTimeoutStdout(ctx, "yum", "--cacheonly", "check-update")
@@ -450,9 +489,14 @@ type systemUpdatesJsonStruct struct {
 	SecurityUpdatesAvailable bool     `json:"security_updates_available"`
 	SystemUpdatesList        []string `json:"system_updates_list"`
 	SecurityUpdatesList      []string `json:"security_updates_list"`
-	CacheExists              bool     `json:"cache_exists"`
-	CacheUpToDate            bool     `json:"cache_up_to_date"`
-	CacheDateCreated         string   `json:"cache_created_on,omitempty"`
+	// RepositoryIssues records repositories that failed to refresh. When this is non-empty
+	// the update counts above are incomplete, because the failed repository contributed
+	// nothing to them.
+	RepositoryIssues     []repoIssue `json:"repository_issues"`
+	RepositoryIssueCount int         `json:"repository_issue_count"`
+	CacheExists          bool        `json:"cache_exists"`
+	CacheUpToDate        bool        `json:"cache_up_to_date"`
+	CacheDateCreated     string      `json:"cache_created_on,omitempty"`
 }
 
 func systemUpdates(useCache bool) systemUpdatesJsonStruct {
@@ -463,6 +507,11 @@ func systemUpdates(useCache bool) systemUpdatesJsonStruct {
 	osType := detectOs()
 	input := getPackageManager(osType).CheckUpdates()
 
+	repositoryIssues := input.repositoryIssues
+	if repositoryIssues == nil {
+		repositoryIssues = []repoIssue{}
+	}
+
 	return systemUpdatesJsonStruct{
 		NumberOfSystemUpdates:    input.numberOfSystemUpdates,
 		NumberOfSecurityUpdates:  input.numberOfSecurityUpdates,
@@ -470,6 +519,8 @@ func systemUpdates(useCache bool) systemUpdatesJsonStruct {
 		SecurityUpdatesAvailable: input.securityUpdatesAvailable,
 		SystemUpdatesList:        input.systemUpdatesList,
 		SecurityUpdatesList:      input.securityUpdatesList,
+		RepositoryIssues:         repositoryIssues,
+		RepositoryIssueCount:     len(repositoryIssues),
 		CacheExists:              false,
 		CacheUpToDate:            false,
 	}
@@ -481,6 +532,7 @@ func readCache() systemUpdatesJsonStruct {
 	result := systemUpdatesJsonStruct{
 		SystemUpdatesList:   []string{},
 		SecurityUpdatesList: []string{},
+		RepositoryIssues:    []repoIssue{},
 	}
 
 	data, err := os.ReadFile(cacheFile)
@@ -503,6 +555,13 @@ func readCache() systemUpdatesJsonStruct {
 	fileInfo, err := os.Stat(cacheFile)
 	if err != nil {
 		log.Printf("Warning: Could not stat cache file: %v", err)
+		// The file was read, so it exists whatever stat says. Fall back to the timestamp the
+		// writer recorded rather than reporting a fresh cache as missing and stale.
+		result.CacheExists = true
+		result.CacheUpToDate = false
+		if written, parseErr := time.Parse("2006-01-02 15:04:05", result.CacheDateCreated); parseErr == nil {
+			result.CacheUpToDate = written.Add(12 * time.Hour).After(time.Now())
+		}
 		return result
 	}
 

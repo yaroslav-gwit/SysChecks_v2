@@ -45,6 +45,12 @@ var (
 			return nil
 		},
 		Run: func(cmd *cobra.Command, args []string) {
+			// The JSON view always reports every check, healthy ones included, so --all is
+			// implied. Monitoring must be able to distinguish "passed" from "absent".
+			if format := resolveOutput(outputText, false, false); format != outputText {
+				emitJSON(collectBannerData(bannerDiskUsedThreshold), format)
+				return
+			}
 			showLoginBanner(noEmojies, bannerShowAll)
 		},
 	}
@@ -86,17 +92,17 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 	content.WriteString(LIGHT_GREEN + emoji("💻", noEmojies) + "OS installed: " + NC + helpers.PrettyOsName() + "\n")
 	content.WriteString(LIGHT_GREEN + emoji("📡", noEmojies) + "Hostname: " + NC + getHostName() + " || " + LIGHT_GREEN + "Machine IPs: " + NC + getIps() + "\n")
 	content.WriteString(LIGHT_GREEN + emoji("🕓", noEmojies) + "System uptime: " + NC + getSystemUptime() + "\n")
-	activeSessions := readActiveSessions()
+	loginSessions := readLoginSessions()
 	sessionCount := 0
-	for _, sessions := range activeSessions {
+	for _, sessions := range loginSessions {
 		sessionCount += len(sessions)
 	}
-	if showAll || len(activeSessions) > 1 {
+	if showAll || len(loginSessions) > 1 {
 		lineColor := LIGHT_GREEN
-		if len(activeSessions) > 1 {
+		if len(loginSessions) > 1 {
 			lineColor = AMBER
 		}
-		content.WriteString(lineColor + emoji("👥", noEmojies) + "Logged-in users: " + NC + fmt.Sprintf("%d (%d sessions)", len(activeSessions), sessionCount) + "\n")
+		content.WriteString(lineColor + emoji("👥", noEmojies) + "Logged-in users: " + NC + fmt.Sprintf("%d (%d sessions)", len(loginSessions), sessionCount) + "\n")
 	}
 	content.WriteString(LIGHT_GREEN + emoji("🤖", noEmojies) + "CPU Info: " + NC + helpers.GetCpuInfoLinux() + "\n")
 
@@ -123,23 +129,7 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 	}
 	content.WriteString("\n")
 
-	kernComp := compareKernels()
-	if showAll || kernComp.kernelNeedsReboot || kernComp.installedKernelCount > 6 {
-		content.WriteString(LIGHT_BLUE + emoji("🔥", noEmojies) + "Kernel status" + NC + "\n")
-		if kernComp.kernelNeedsReboot {
-			content.WriteString(LIGHT_RED + emoji("🔴", noEmojies) + "Please reboot to apply the kernel update!" + NC + "\n")
-			content.WriteString(LIGHT_RED + "        Currently active kernel:   " + NC + kernComp.runningKernel + "\n")
-			content.WriteString(LIGHT_GREEN + "        Latest installed kernel:   " + NC + kernComp.latestInstalledKernel + "\n")
-		} else if showAll {
-			content.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "Running the latest installed kernel: " + NC + kernComp.runningKernel + "\n")
-		}
-		if kernComp.installedKernelCount > 6 {
-			content.WriteString(AMBER + emoji("⚠️", noEmojies) + fmt.Sprintf("Installed kernels: %d. Cleanup recommended: `sudo syschecks kernel cleanup --keep 4`", kernComp.installedKernelCount) + NC + "\n")
-		} else if showAll {
-			content.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + fmt.Sprintf("Installed kernels: %d", kernComp.installedKernelCount) + NC + "\n")
-		}
-		content.WriteString("\n")
-	}
+	writeKernelStatus(&content, compareKernels(), noEmojies, showAll)
 
 	// Update status is exception-only: healthy automation and zero counts stay quiet.
 	var updateIssues strings.Builder
@@ -171,8 +161,11 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 		updateIssues.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "No new security updates available" + NC + "\n")
 	}
 
+	writeRepositoryIssues(&updateIssues, sysUpdates.RepositoryIssues, noEmojies, showAll)
+
 	if !sysUpdates.CacheUpToDate {
-		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Your update cache is out-of-date." + NC + " Refresh using: `sudo syschecks updates --cache-create`\n")
+		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Your update cache is out-of-date" + NC + "\n")
+		updateIssues.WriteString(LIGHT_RED + "        Run: " + NC + "sudo syschecks updates --cache-create\n")
 	} else if showAll {
 		cacheStatus := "Update cache is current"
 		if sysUpdates.CacheDateCreated != "" {
@@ -189,6 +182,64 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 	rendered := boxNew.String("", strings.TrimRight(content.String(), "\n"))
 	rendered = addBannerHeader(rendered, userHello, versionStatus)
 	fmt.Printf("\n%s\n", rendered)
+}
+
+// kernelCleanupThreshold is the installed-kernel count above which cleanup is suggested.
+const kernelCleanupThreshold = 6
+
+// writeKernelStatus renders the kernel section. Advice is put on its own indented line
+// rather than appended to the summary: as a single sentence the cleanup hint ran past the
+// banner width on an 80-column terminal and box-cli-maker broke it mid-word.
+func writeKernelStatus(out *strings.Builder, kernComp compareKernelsStruct, noEmojies bool, showAll bool) {
+	needsCleanup := kernComp.installedKernelCount > kernelCleanupThreshold
+	if !showAll && !kernComp.kernelNeedsReboot && !needsCleanup {
+		return
+	}
+
+	out.WriteString(LIGHT_BLUE + emoji("🔥", noEmojies) + "Kernel status" + NC + "\n")
+	if kernComp.kernelNeedsReboot {
+		out.WriteString(LIGHT_RED + emoji("🔴", noEmojies) + "Please reboot to apply the kernel update!" + NC + "\n")
+		out.WriteString(LIGHT_RED + "        Currently active kernel:   " + NC + kernComp.runningKernel + "\n")
+		out.WriteString(LIGHT_GREEN + "        Latest installed kernel:   " + NC + kernComp.latestInstalledKernel + "\n")
+	} else if showAll {
+		out.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "Running the latest installed kernel: " + NC + kernComp.runningKernel + "\n")
+	}
+
+	if needsCleanup {
+		out.WriteString(AMBER + emoji("🧹", noEmojies) + fmt.Sprintf("Installed kernels: %d — cleanup recommended", kernComp.installedKernelCount) + NC + "\n")
+		out.WriteString(AMBER + "        Run: " + NC + "sudo syschecks kernel cleanup --keep 4\n")
+	} else if showAll {
+		out.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + fmt.Sprintf("Installed kernels: %d", kernComp.installedKernelCount) + NC + "\n")
+	}
+	out.WriteString("\n")
+}
+
+// bannerRepoIssueLimit caps how many broken repositories are listed individually so a host
+// with a widely-mirrored outage cannot push the rest of the banner off the screen.
+const bannerRepoIssueLimit = 4
+
+// writeRepositoryIssues renders failed repository refreshes. This is the only place an
+// operator finds out that update counts are understated because a repository is broken.
+func writeRepositoryIssues(out *strings.Builder, issues []repoIssue, noEmojies bool, showAll bool) {
+	if len(issues) == 0 {
+		if showAll {
+			out.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "All repositories refreshed successfully" + NC + "\n")
+		}
+		return
+	}
+
+	out.WriteString(LIGHT_RED + emoji("📛", noEmojies) + fmt.Sprintf("Broken repositories: %d — update counts are incomplete", len(issues)) + NC + "\n")
+
+	shown := issues
+	if len(shown) > bannerRepoIssueLimit {
+		shown = shown[:bannerRepoIssueLimit]
+	}
+	for _, issue := range shown {
+		out.WriteString(LIGHT_RED + "        " + shortenCell(issue.Repo, 26) + ": " + NC + shortenCell(issue.Reason, 44) + "\n")
+	}
+	if remaining := len(issues) - len(shown); remaining > 0 {
+		out.WriteString(LIGHT_RED + "        " + NC + fmt.Sprintf("... and %d more (see `syschecks updates --json-pretty`)", remaining) + "\n")
+	}
 }
 
 func bannerWrappingLimit() int {
@@ -283,11 +334,20 @@ func getUserName() string {
 	return "user"
 }
 
-// getIps returns the system's IP addresses (excluding loopback and IPv6 link-local)
+// getIps returns the system's IP addresses formatted for display.
 func getIps() string {
+	ips := getIpList()
+	if len(ips) == 0 {
+		return "[ none ]"
+	}
+	return "[ " + strings.Join(ips, " ") + " ]"
+}
+
+// getIpList returns the system's IP addresses (excluding loopback and IPv6 link-local).
+func getIpList() []string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return "[ unknown ]"
+		return nil
 	}
 
 	var ips []string
@@ -314,30 +374,33 @@ func getIps() string {
 		}
 	}
 
-	if len(ips) == 0 {
-		return "[ none ]"
-	}
-
-	return "[ " + strings.Join(ips, " ") + " ]"
+	return ips
 }
 
-// getSystemUptime reads uptime directly from /proc/uptime (much faster than parsing /proc/stat)
-func getSystemUptime() string {
+// getSystemUptimeSeconds reads uptime directly from /proc/uptime (much faster than parsing
+// /proc/stat). Returns 0 when unavailable.
+func getSystemUptimeSeconds() float64 {
 	data, err := os.ReadFile("/proc/uptime")
 	if err != nil {
-		return "unknown"
+		return 0
 	}
 
 	// /proc/uptime format: "uptime_seconds idle_seconds"
 	fields := strings.Fields(string(data))
 	if len(fields) < 1 {
-		return "unknown"
+		return 0
 	}
 
-	// Parse uptime in seconds (as float)
-	uptimeStr := fields[0]
 	var uptimeSeconds float64
-	if _, err := fmt.Sscanf(uptimeStr, "%f", &uptimeSeconds); err != nil {
+	if _, err := fmt.Sscanf(fields[0], "%f", &uptimeSeconds); err != nil {
+		return 0
+	}
+	return uptimeSeconds
+}
+
+func getSystemUptime() string {
+	uptimeSeconds := getSystemUptimeSeconds()
+	if uptimeSeconds <= 0 {
 		return "unknown"
 	}
 

@@ -3,13 +3,17 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"regexp"
 	"strings"
 	"syschecks/helpers"
+	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // Pre-compiled regex for package parsing
@@ -18,31 +22,166 @@ var (
 	reVersionDnf = regexp.MustCompile(`-\d+.+`)
 )
 
+// applyUpdatesDefaultDelay spreads unattended update runs across roughly a quarter of an
+// hour. Guests on one hypervisor are commonly created from the same image and so share an
+// identical cron schedule; without a splay they all refresh metadata and unpack packages in
+// the same minute, which shows up on the host as an I/O spike.
+const applyUpdatesDefaultDelay = 15 * time.Minute
+
+// Update scopes. A single enum replaces the previous pair of booleans, which could not
+// express "exactly one of these" and meant something different on each command that had them.
+const (
+	updateScopeSecurity = "security"
+	updateScopeSystem   = "system"
+)
+
+var updateScopeCompletions = []string{
+	"security\tSecurity updates only (default)",
+	"system\tAll available system updates",
+}
+
 var (
 	applyUpdatesCmdSystemUpdates     bool
 	applyUpdatesCmdIgnorePackageLock bool
+	applyUpdatesIgnoreLocks          bool
+	applyUpdatesScope                string
+	applyUpdatesMaxDelay             time.Duration
+	applyUpdatesNoDelay              bool
+	applyUpdatesDryRun               bool
 
+	applyUpdatesLong = `Apply system or security updates.
+
+Unattended runs wait a random interval of up to --delay before starting, so that guests
+sharing a virtualization host do not all update at once. Interactive runs never wait.`
+
+	updatesApplyCmd = &cobra.Command{
+		Use:     "apply",
+		Short:   "Install available updates",
+		Long:    applyUpdatesLong,
+		Args:    cobra.NoArgs,
+		PreRunE: applyUpdatesPreRun,
+		Run:     func(cmd *cobra.Command, args []string) { runApplyUpdates() },
+	}
+
+	// The pre-restructure spelling. Kept because deployed cron files invoke it by name.
 	applyUpdatesCmd = &cobra.Command{
-		Use:   "apply-updates",
-		Short: "Apply updates",
-		Long:  `Apply system or security updates.`,
-		Run: func(cmd *cobra.Command, args []string) {
-			updates := systemUpdates(false)
-			osType := detectOs()
-
-			var updateList []string
-			if applyUpdatesCmdSystemUpdates {
-				updateList = updates.SystemUpdatesList
-			} else {
-				updateList = updates.SecurityUpdatesList
-			}
-
-			applyUpdates(updateList, osType)
-			// Refresh cache after applying updates
-			checkUpdates(true, false, false)
-		},
+		Use:     "apply-updates",
+		Short:   "Apply updates (deprecated: use 'updates apply')",
+		Long:    applyUpdatesLong,
+		Args:    cobra.NoArgs,
+		Hidden:  true,
+		PreRunE: applyUpdatesPreRun,
+		Run:     func(cmd *cobra.Command, args []string) { runApplyUpdates() },
 	}
 )
+
+func applyUpdatesPreRun(cmd *cobra.Command, args []string) error {
+	if applyUpdatesMaxDelay < 0 {
+		return fmt.Errorf("--delay must not be negative")
+	}
+	if _, err := resolveUpdateScope(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// resolveUpdateScope folds the deprecated --system boolean into the --scope enum. Passing
+// both is rejected rather than silently resolved, because the two could disagree.
+func resolveUpdateScope() (string, error) {
+	switch applyUpdatesScope {
+	case "":
+		if applyUpdatesCmdSystemUpdates {
+			return updateScopeSystem, nil
+		}
+		return updateScopeSecurity, nil
+	case updateScopeSecurity, updateScopeSystem:
+		if applyUpdatesCmdSystemUpdates && applyUpdatesScope != updateScopeSystem {
+			return "", fmt.Errorf("--system contradicts --scope %s; use --scope only", applyUpdatesScope)
+		}
+		return applyUpdatesScope, nil
+	default:
+		return "", fmt.Errorf("invalid --scope %q: must be %s or %s", applyUpdatesScope, updateScopeSecurity, updateScopeSystem)
+	}
+}
+
+func runApplyUpdates() {
+	scope, err := resolveUpdateScope()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Delay before anything touches the network or disk, so the metadata refresh is
+	// spread too, not just the package installs.
+	waitBeforeApplyingUpdates(applyUpdatesMaxDelay, applyUpdatesNoDelay, runningInteractively())
+
+	updates := systemUpdates(false)
+	osType := detectOs()
+
+	updateList := updates.SecurityUpdatesList
+	if scope == updateScopeSystem {
+		updateList = updates.SystemUpdatesList
+	}
+
+	if applyUpdatesDryRun {
+		printApplyUpdatesPlan(scope, updateList)
+		return
+	}
+
+	applyUpdates(updateList, osType)
+	// Refresh cache after applying updates
+	checkUpdates(true, false, false)
+}
+
+func printApplyUpdatesPlan(scope string, updateList []string) {
+	if len(updateList) == 0 {
+		fmt.Printf("No %s updates to apply.\n", scope)
+		return
+	}
+
+	locks := loadPackageLock()
+	if applyUpdatesIgnoreLocks || applyUpdatesCmdIgnorePackageLock {
+		locks = nil
+	}
+
+	fmt.Printf("Would apply %d %s update(s):\n", len(updateList), scope)
+	seen := make(map[string]bool)
+	for _, entry := range updateList {
+		pkg := extractPackageName(entry)
+		if pkg == "" || seen[pkg] {
+			continue
+		}
+		seen[pkg] = true
+		if locks != nil && isPackageLocked(pkg, locks) {
+			fmt.Printf("  %s (skipped: locked in package.lock.json)\n", pkg)
+			continue
+		}
+		fmt.Printf("  %s\n", pkg)
+	}
+}
+
+// runningInteractively reports whether a human is watching. Cron redirects stdin, so this
+// cleanly separates the unattended runs that need spreading from manual ones that do not.
+func runningInteractively() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) || term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// applyUpdatesDelay picks the random wait before an unattended update run. It is kept
+// separate from the sleep so the selection logic stays testable.
+func applyUpdatesDelay(maxDelay time.Duration, disabled bool, interactive bool) time.Duration {
+	if disabled || interactive || maxDelay <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(maxDelay) + 1))
+}
+
+func waitBeforeApplyingUpdates(maxDelay time.Duration, disabled bool, interactive bool) {
+	delay := applyUpdatesDelay(maxDelay, disabled, interactive)
+	if delay <= 0 {
+		return
+	}
+	log.Printf("Waiting %s before applying updates to spread load across hosts (--no-delay to skip)", delay.Round(time.Second))
+	time.Sleep(delay)
+}
 
 // loadPackageLock loads the package lock file, returning empty slice if not found
 func loadPackageLock() []string {
@@ -101,7 +240,7 @@ func applyUpdates(updateList []string, osType detectOsStruct) {
 	}
 
 	packageLock := loadPackageLock()
-	if applyUpdatesCmdIgnorePackageLock {
+	if applyUpdatesCmdIgnorePackageLock || applyUpdatesIgnoreLocks {
 		packageLock = nil
 	}
 

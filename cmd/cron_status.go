@@ -44,53 +44,69 @@ var cronJobDefinitions = []cronJobDefinition{
 		path:            helpers.CACHE_JOB,
 		legacyPaths:     []string{helpers.LEGACY_CACHE_JOB},
 		defaultSchedule: "At reboot + every 12h at :07",
-		enableAction:    "init",
-		disableAction:   "init --disable",
+		enableAction:    "schedule enable update-cache",
+		disableAction:   "schedule disable update-cache",
 	},
 	{
 		name:            "Security updates",
 		path:            helpers.SECURITY_UPDATES_JOB,
 		legacyPaths:     []string{helpers.LEGACY_SECURITY_UPDATES_JOB},
 		defaultSchedule: "Daily 04:15",
-		enableAction:    "updates --security",
-		disableAction:   "updates --disable",
+		enableAction:    "schedule enable updates --scope security",
+		disableAction:   "schedule disable updates",
 	},
 	{
 		name:            "Full system updates",
 		path:            helpers.SYSTEM_UPDATES_JOB,
 		legacyPaths:     []string{helpers.LEGACY_SYSTEM_UPDATES_JOB, helpers.LEGACY_SYSTEM_HOLD_JOB},
 		defaultSchedule: "Daily 04:15",
-		enableAction:    "updates --system",
-		disableAction:   "updates --disable",
+		enableAction:    "schedule enable updates --scope system",
+		disableAction:   "schedule disable updates",
 	},
 	{
 		name:            "Syschecks self-update",
 		path:            helpers.AUTOUPDATE_JOB,
 		defaultSchedule: "Daily 03:30",
-		enableAction:    "autoupdate",
-		disableAction:   "autoupdate --disable",
+		enableAction:    "schedule enable self-update",
+		disableAction:   "schedule disable self-update",
 	},
 	{
 		name:            "Kernel cleanup",
 		path:            helpers.KERNEL_CLEANUP_JOB,
 		defaultSchedule: "Sunday 03:45",
-		enableAction:    "kernels",
-		disableAction:   "kernels --disable",
+		enableAction:    "schedule enable kernel-cleanup",
+		disableAction:   "schedule disable kernel-cleanup",
 	},
+}
+
+// cronEnabledCell renders the at-a-glance on/off answer. The word carries the meaning on its
+// own so the column still reads where emoji do not render (log capture, plain consoles); the
+// symbol only makes a long list scannable without reading it.
+func cronEnabledCell(status cronJobStatus) string {
+	switch {
+	case status.state == "CONFLICT":
+		return "🛑 yes"
+	case status.active && status.legacy:
+		return "🟡 yes"
+	case status.active:
+		return "✅ yes"
+	default:
+		return "❌ no"
+	}
 }
 
 func printCronStatus() {
 	statuses := collectCronJobStatuses(cronJobDefinitions)
 	rows := make([][]string, 0, len(statuses))
 	for _, status := range statuses {
-		rows = append(rows, []string{status.name, status.state, status.schedule, status.action})
+		rows = append(rows, []string{status.name, cronEnabledCell(status), status.state, status.schedule, status.action})
 	}
 
 	fmt.Println("SysChecks cron jobs (schedule shown in server local time)")
-	printTable([]string{"Job", "State", "Schedule", "Enable / disable"}, rows)
+	printTable([]string{"Job", "Enabled", "State", "Schedule", "Manage with `syschecks ...`"}, rows)
 
 	if automaticUpdateConflict(statuses) {
-		fmt.Println("Warning: security-only and full-system update jobs are both active. Enable either mode to remove the conflicting job, or run `syschecks cron updates --disable`.")
+		fmt.Println("Warning: security-only and full-system update jobs are both active. Enable either mode to remove the conflicting job, or run `syschecks schedule disable updates`.")
 	}
 }
 

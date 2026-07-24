@@ -25,6 +25,29 @@ The `zabbix init` command adds the following line to your Zabbix agent configura
 UserParameter=syschecks[*],syschecks $1
 ```
 
+Because the key is passed straight through as the subcommand, an item key **is** a command
+name. The v1.3.0 restructure keeps every previous spelling working, so existing items such as
+`syschecks[kernel]` and `syschecks[updates]` continue to resolve. `syschecks migrate --apply`
+rewrites any explicit (non-wildcard) `UserParameter` lines that name a retired command.
+
+### Recommended keys after v1.3.0
+
+| Key | Reports |
+|-----|---------|
+| `syschecks[banner]` with `-o json`* | Everything below in one item, including a `healthy` boolean per check |
+| `syschecks[kernel]` | Reboot required, running/latest kernel, installed count |
+| `syschecks[updates]` | System and security update counts, plus `repository_issues` |
+
+\* For a single-item setup, define a dedicated parameter rather than relying on the wildcard:
+`UserParameter=syschecks.banner,syschecks banner --output json`. It reports every check —
+including healthy ones the human banner hides — so a trigger can distinguish "check passed"
+from "check missing".
+
+Repository health is new in v1.3.0 and worth a trigger: a repository that has lost its GPG
+key or disappeared makes update counts silently understated.
+`$.repository_issue_count > 0` catches it.
+
+
 This allows Zabbix to call syschecks commands with parameters.
 
 ### Zabbix Agent Config Locations
@@ -92,7 +115,7 @@ Type of information: Text
 
 ### System Info
 
-**Item Key:** `syschecks[sysinfo]`
+**Item Key:** `syschecks[banner]` (formerly `syschecks[banner]`)
 
 **Returns:** JSON with IP addresses
 

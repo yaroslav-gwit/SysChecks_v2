@@ -18,6 +18,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-07-24
+
+### Added
+- Resource-then-verb command structure: `updates check|apply|refresh`, `kernel status|cleanup`, `users list`, and `schedule list|enable|disable <job>`. Every previous spelling still works (see Deprecated).
+- Global `-o, --output text|json|json-pretty` flag on every command, with shell completion on its values. Job names for `schedule enable|disable` and values for `--scope` complete too.
+- `syschecks banner --output json`, reporting every banner check — including the healthy ones the human banner suppresses — so monitoring can tell "check passed" from "check missing". Absorbs everything `sysinfo` printed, under the same `ip_address_list` field name.
+- `syschecks migrate` (report-only) and `syschecks migrate --apply`, which rewrite generated cron files and Zabbix `UserParameter` lines that reference pre-restructure command names. Exits non-zero while changes are outstanding, so monitoring can ask whether a host is fully migrated. Called automatically by `auto-install.sh` and `install-offline.sh`.
+- `syschecks updates apply --dry-run`, listing what would be installed (including which packages `package.lock.json` would skip) without changing anything.
+- Randomized start delay for unattended update runs (`--delay`, default 15m; `--no-delay` to disable), so guests sharing a virtualization host do not all update in the same minute. Interactive runs never wait.
+- Broken-repository detection on the banner and in the update cache (`repository_issues`, `repository_issue_count`), covering missing GPG keys, HTTP 404, unresolvable hosts and TLS failures on apt, DNF4 and DNF5.
+- `Enabled` column in `schedule list` with a status symbol (`✅ yes`, `🟡 yes` legacy, `🛑 yes` conflict, `❌ no`).
+
+### Changed
+- **BREAKING:** `syschecks kernel cleanup` now removes old kernel packages by default. Previously it only previewed them unless `--execute` was given. Use `syschecks kernel cleanup --dry-run` for the old preview behaviour. `--execute` is still accepted but deprecated and has no effect beyond the new default. Run interactively without `--yes`, the command now lists the packages and asks for confirmation; unattended runs (cron) proceed without prompting. This aligns kernel cleanup with every other mutating command, which now share a single `--dry-run` convention.
+- `userinfo` renamed to `users`; the `Active` column is now `Logged in`, and the JSON fields `active`/`active_sessions`/`active_sources` are now `logged_in`/`login_sessions`/`login_sources`. "Active" was read as "the account is enabled", which is what the `Password` column actually reports.
+- Generated cron jobs now use the new command spellings. Existing jobs are rewritten by `syschecks migrate --apply`.
+- `schedule list` (formerly `cron status`) shows the `syschecks schedule ...` command to run for each job instead of the old `cron` subcommand.
+- Tables size and pad by display width instead of byte length, so cells containing emoji or non-ASCII text no longer stagger the right-hand border.
+
+### Deprecated
+- `apply-updates` → `updates apply`; `--system`/`-s` → `--scope system`; `--ignore-lock-file`/`-i` → `--ignore-locks`.
+- `updates --cache-create` → `updates refresh` (also spelled `updates cache refresh`); `updates --cache-use` → `updates check --refresh` for a live check.
+- `--json` / `--json-pretty` on every command → `--output json` / `--output json-pretty`.
+- `cron` → `schedule`; `cron status` → `schedule list`; `cron init|updates|autoupdate|kernels [--disable]` → `schedule enable|disable <job>`.
+- `sysinfo` → `banner --output json`.
+- `banner --no-emojies` → `--no-emojis`.
+- All of the above keep working for at least one full release cycle.
+
+### Fixed
+- `updates --cache-create` wrote `cache_exists: false` and `cache_up_to_date: false` into the cache file it had just created, so anything reading the JSON directly saw a cache that claimed not to exist.
+- Security update counts on DNF5 counted timestamps instead of packages: the parser took the last whitespace field, which is the `Issued` time in DNF5's five-column layout. On a Fedora 44 host this reported 10 security updates where there were 59, and that number is shown in the login banner.
+- The `dnf repoquery` fast path returned a single malformed entry on DNF5, which suppressed the `check-update` fallback and under-reported system updates (1 instead of 174 on a Fedora 44 host). DNF5 emits the `--qf` format verbatim with no record separator, so the format string now carries its own newline.
+- Broken repositories were reported nowhere on Fedora: DNF5 exits 0 and prints "Metadata cache created." even when a repository fails completely, writing its errors only to stderr. `apt-get update` likewise exits 0 when a repository host stops resolving.
+- The kernel-cleanup banner line overflowed an 80-column banner, and its `⚠️` emoji (a variation-selector sequence) measured one column but rendered as two, shifting that line's right border.
+
+---
+
 ## [1.2.0] - 2026-07-13
 
 ### Added
@@ -183,7 +220,8 @@ Each release section follows this format:
 
 ---
 
-[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.1...v1.0.2

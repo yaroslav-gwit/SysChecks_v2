@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 )
 
@@ -21,42 +22,49 @@ var (
 	userinfoAllUsers   bool
 
 	userinfoCmd = &cobra.Command{
-		Use:   "userinfo",
-		Short: "List real system users",
-		Long:  `List real system users, active login state, password lock state, and last login source.`,
-		Run: func(cmd *cobra.Command, args []string) {
-			users := collectUserInfo(userinfoAllUsers)
+		Use: "users",
+		// The old name stays as an alias so existing scripts and Zabbix items keep working.
+		Aliases: []string{"userinfo"},
+		Short:   "List real system users and who is logged in",
+		Long: `List real system users: whether they are currently logged in, password lock
+state, and last login source.
 
-			if userinfoJSON || userinfoJSONPretty {
-				var jsonData []byte
-				var err error
-				if userinfoJSONPretty {
-					jsonData, err = json.MarshalIndent(users, "", "   ")
-				} else {
-					jsonData, err = json.Marshal(users)
-				}
-				if err != nil {
-					log.Fatal("Error marshaling data to JSON:", err)
-				}
-				fmt.Println(string(jsonData))
-				return
-			}
+"Logged in" reflects live sessions only. Whether the account itself is usable is reported
+by the Password column (locked / unlocked).`,
+		Run: func(cmd *cobra.Command, args []string) { runUsersList() },
+	}
 
-			printUserInfoTable(users)
-		},
+	usersListCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List real system users and who is logged in",
+		Args:  cobra.NoArgs,
+		Run:   func(cmd *cobra.Command, args []string) { runUsersList() },
 	}
 )
 
+func runUsersList() {
+	users := collectUserInfo(userinfoAllUsers)
+
+	if format := resolveOutput(outputText, userinfoJSON, userinfoJSONPretty); format != outputText {
+		emitJSON(users, format)
+		return
+	}
+
+	printUserInfoTable(users)
+}
+
 type userInfoRecord struct {
-	Username       string `json:"username"`
-	UID            int    `json:"uid"`
-	GID            int    `json:"gid"`
-	FullName       string `json:"full_name,omitempty"`
-	Home           string `json:"home"`
-	Shell          string `json:"shell"`
-	Active         bool   `json:"active"`
-	ActiveSessions int    `json:"active_sessions"`
-	ActiveSources  string `json:"active_sources,omitempty"`
+	Username string `json:"username"`
+	UID      int    `json:"uid"`
+	GID      int    `json:"gid"`
+	FullName string `json:"full_name,omitempty"`
+	Home     string `json:"home"`
+	Shell    string `json:"shell"`
+	// LoggedIn describes session state, not account state. It was previously called
+	// "active", which operators read as "the account is enabled".
+	LoggedIn       bool   `json:"logged_in"`
+	LoginSessions  int    `json:"login_sessions"`
+	LoginSources   string `json:"login_sources,omitempty"`
 	PasswordStatus string `json:"password_status"`
 	PasswordLocked *bool  `json:"password_locked,omitempty"`
 	LastLogin      string `json:"last_login"`
@@ -90,7 +98,7 @@ func collectUserInfo(includeAll bool) []userInfoRecord {
 	passwdEntries := readPasswdEntries("/etc/passwd")
 	uidRange := readLoginDefRange("/etc/login.defs")
 	shadowStatuses := readShadowStatuses("/etc/shadow")
-	activeSessions := readActiveSessions()
+	loginSessions := readLoginSessions()
 
 	records := make([]userInfoRecord, 0, len(passwdEntries))
 	for _, entry := range passwdEntries {
@@ -100,7 +108,7 @@ func collectUserInfo(includeAll bool) []userInfoRecord {
 
 		lastLogin := lastLoginForUser(entry.username)
 		passwordStatus, passwordLocked := passwordStatusForUser(entry.username, shadowStatuses)
-		activeSources := activeSessions[entry.username]
+		loginSources := loginSessions[entry.username]
 
 		records = append(records, userInfoRecord{
 			Username:       entry.username,
@@ -109,9 +117,9 @@ func collectUserInfo(includeAll bool) []userInfoRecord {
 			FullName:       entry.fullName,
 			Home:           entry.home,
 			Shell:          entry.shell,
-			Active:         len(activeSources) > 0,
-			ActiveSessions: len(activeSources),
-			ActiveSources:  strings.Join(activeSources, ", "),
+			LoggedIn:       len(loginSources) > 0,
+			LoginSessions:  len(loginSources),
+			LoginSources:   strings.Join(loginSources, ", "),
 			PasswordStatus: passwordStatus,
 			PasswordLocked: passwordLocked,
 			LastLogin:      lastLogin.when,
@@ -283,7 +291,7 @@ func passwordStatusForUser(username string, shadowStatuses map[string]string) (s
 	}
 }
 
-func readActiveSessions() map[string][]string {
+func readLoginSessions() map[string][]string {
 	out, err := exec.Command("who").Output()
 	if err != nil {
 		return map[string][]string{}
@@ -398,13 +406,15 @@ func classifyLoginSource(tty string, host string) string {
 func printUserInfoTable(users []userInfoRecord) {
 	// Keep the default table compact enough for a standard 80-column SSH
 	// terminal. The complete session and account details remain in JSON output.
-	headers := []string{"User", "UID", "Active", "Password", "Last login", "Source"}
+	// "Logged in" rather than "Active": operators read "active" as "the account is enabled",
+	// which is what the Password column actually reports.
+	headers := []string{"User", "UID", "Logged in", "Password", "Last login", "Source"}
 	rows := make([][]string, 0, len(users))
 
 	for _, user := range users {
-		active := "no"
-		if user.Active {
-			active = fmt.Sprintf("yes (%d)", user.ActiveSessions)
+		loggedIn := "no"
+		if user.LoggedIn {
+			loggedIn = fmt.Sprintf("yes (%d)", user.LoginSessions)
 		}
 
 		passwordStatus := user.PasswordStatus
@@ -420,7 +430,7 @@ func printUserInfoTable(users []userInfoRecord) {
 		rows = append(rows, []string{
 			user.Username,
 			strconv.Itoa(user.UID),
-			active,
+			loggedIn,
 			passwordStatus,
 			user.LastLogin,
 			lastSource,
@@ -430,55 +440,71 @@ func printUserInfoTable(users []userInfoRecord) {
 	printTable(headers, rows)
 }
 
+// shortenCell truncates to a column count, not a byte count. Repository diagnoses contain
+// em dashes, and slicing bytes would cut a multi-byte rune in half and print a replacement
+// character inside the banner.
 func shortenCell(value string, maximum int) string {
-	if len(value) <= maximum {
+	runes := []rune(value)
+	if len(runes) <= maximum {
 		return value
 	}
 	if maximum <= 3 {
-		return value[:maximum]
+		return string(runes[:maximum])
 	}
-	return value[:maximum-3] + "..."
+	return string(runes[:maximum-3]) + "..."
 }
 
 func printTable(headers []string, rows [][]string) {
+	fprintTable(os.Stdout, headers, rows)
+}
+
+// fprintTable sizes and pads by display width, not byte length. A cell containing an emoji
+// or any non-ASCII text is more bytes than columns, and padding by bytes would push that
+// row's borders out of line with every other row.
+func fprintTable(out io.Writer, headers []string, rows [][]string) {
 	widths := make([]int, len(headers))
 	for i, header := range headers {
-		widths[i] = len(header)
+		widths[i] = runewidth.StringWidth(header)
 	}
 	for _, row := range rows {
 		for i, cell := range row {
-			if len(cell) > widths[i] {
-				widths[i] = len(cell)
+			if width := runewidth.StringWidth(cell); width > widths[i] {
+				widths[i] = width
 			}
 		}
 	}
 
-	printBorder("╭", "┬", "╮", widths)
-	printRow(headers, widths)
-	printBorder("├", "┼", "┤", widths)
+	printBorder(out, "╭", "┬", "╮", widths)
+	printRow(out, headers, widths)
+	printBorder(out, "├", "┼", "┤", widths)
 	for _, row := range rows {
-		printRow(row, widths)
+		printRow(out, row, widths)
 	}
-	printBorder("╰", "┴", "╯", widths)
+	printBorder(out, "╰", "┴", "╯", widths)
 }
 
-func printBorder(left string, middle string, right string, widths []int) {
-	fmt.Print(left)
+func printBorder(out io.Writer, left string, middle string, right string, widths []int) {
+	fmt.Fprint(out, left)
 	for i, width := range widths {
-		fmt.Print(strings.Repeat("─", width+2))
+		fmt.Fprint(out, strings.Repeat("─", width+2))
 		if i == len(widths)-1 {
-			fmt.Print(right)
+			fmt.Fprint(out, right)
 		} else {
-			fmt.Print(middle)
+			fmt.Fprint(out, middle)
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 }
 
-func printRow(cells []string, widths []int) {
-	fmt.Print("│")
+func printRow(out io.Writer, cells []string, widths []int) {
+	fmt.Fprint(out, "│")
 	for i, cell := range cells {
-		fmt.Printf(" %-*s │", widths[i], cell)
+		// Pad manually: %-*s counts bytes, so it under-pads any cell holding an emoji.
+		padding := widths[i] - runewidth.StringWidth(cell)
+		if padding < 0 {
+			padding = 0
+		}
+		fmt.Fprint(out, " "+cell+strings.Repeat(" ", padding)+" │")
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 }

@@ -176,6 +176,28 @@ install_package_lock() {
     fi
 }
 
+apply_migrations() {
+    # Rewrite generated cron and Zabbix files that still reference pre-v1.3.0 command names.
+    # Deliberately explicit rather than a check inside the binary: `syschecks banner` runs on
+    # every SSH login and must not pay for a one-time fixup.
+    if ! command -v syschecks &> /dev/null; then
+        print_warning "Could not apply migrations (syschecks not in PATH yet)"
+        return
+    fi
+
+    if syschecks migrate > /dev/null 2>&1; then
+        print_info "No command-name migrations needed"
+        return
+    fi
+
+    print_info "Migrating generated files to current command names..."
+    if syschecks migrate --apply; then
+        print_success "Migrations applied"
+    else
+        print_warning "Some migrations could not be applied; run 'syschecks migrate' to inspect"
+    fi
+}
+
 enable_bash_completion() {
     # Check if bash-completion is available
     if [ -d "/etc/bash_completion.d" ] || [ -d "/usr/share/bash-completion/completions" ]; then
@@ -379,6 +401,9 @@ chmod 0755 "$INSTALL_DIR"
 
 # Enable bash completion
 enable_bash_completion
+
+# Rewrite files that reference old command names (safe to re-run)
+apply_migrations
 
 # Only set up cron jobs on new installations
 if [ "$IS_UPDATE" = "false" ]; then

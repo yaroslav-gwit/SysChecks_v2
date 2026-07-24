@@ -68,17 +68,44 @@ SysChecks v2 is a Go-based CLI tool for Linux system administration, primarily e
 
 ## Key Commands
 
+Commands follow `syschecks <resource> <verb>`. Every pre-v1.3.0 spelling still works as a
+hidden, deprecated alias — see `syschecks migrate`.
+
 | Command | Description |
 |---------|-------------|
-| `syschecks kernel` | Check if kernel reboot is needed (JSON output) |
-| `syschecks kernel cleanup` | Clean up old kernel packages |
-| `syschecks updates` | Check for system/security updates |
-| `syschecks apply-updates` | Apply security updates (or `--system` for all) |
-| `syschecks banner` | Display SSH login banner |
-| `syschecks cron init` | Set up update cache cron job |
-| `syschecks cron updates --security/--system` | Enable automatic updates |
+| `syschecks banner` | Display SSH login banner (stays top level: `/etc/profile.d` invokes it) |
+| `syschecks banner -o json` | Full machine-readable system report, every check including healthy ones |
+| `syschecks updates check` | Report available updates (cached; `--refresh` for a live query) |
+| `syschecks updates apply --scope security\|system` | Install updates (`--dry-run` to preview) |
+| `syschecks updates refresh` | Refresh the update cache (also `updates cache refresh`) |
+| `syschecks kernel status` | Check if a kernel reboot is needed |
+| `syschecks kernel cleanup` | **Removes** old kernel packages (`--dry-run` to preview) |
+| `syschecks users list` | List users and who is logged in |
+| `syschecks schedule list` | Show which jobs run automatically |
+| `syschecks schedule enable <job>` | Enable a job: `updates` (needs `--scope`), `self-update`, `kernel-cleanup`, `update-cache` |
+| `syschecks schedule disable <job>` | Disable a job, or `all` |
+| `syschecks migrate [--apply]` | Rewrite cron/Zabbix files that use old command names |
 | `syschecks zabbix init` | Configure Zabbix agent integration |
 | `syschecks version` | Show version (`-v` for verbose) |
+
+### Global flags
+
+`-o, --output text|json|json-pretty` works on every command and replaces the old per-command
+`--json` / `--json-pretty`. Values, job names, and `--scope` values are all tab-completable;
+the installers write the completion script to `/etc/bash_completion.d/syschecks`.
+
+### Deprecated spellings (still functional)
+
+| Old | New |
+|-----|-----|
+| `apply-updates [--system]` | `updates apply [--scope system]` |
+| `updates --cache-create` | `updates refresh` |
+| `kernel` | `kernel status` |
+| `kernel cleanup --execute` | `kernel cleanup` (removal is the default now) |
+| `userinfo` | `users list` |
+| `sysinfo` | `banner -o json` |
+| `cron status` | `schedule list` |
+| `cron init\|updates\|autoupdate\|kernels [--disable]` | `schedule enable\|disable <job>` |
 
 ## Coding Patterns
 
