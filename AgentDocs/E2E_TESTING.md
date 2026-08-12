@@ -40,10 +40,14 @@ Containers are enough for most CLI, update, cron, Zabbix-file, and banner checks
 | `ubuntu:22.04` | apt | apt updates, apt apply, banner, cache |
 | `ubuntu:26.04` | apt | future Ubuntu apt-get availability and OS name |
 | `debian:12-slim` | apt | Debian no-update or low-update path |
+| `debian:13-slim` | apt | current Debian stable detection, updates, cache, and banner |
 | `fedora:40` | dnf | dnf `repoquery` and `updateinfo` paths |
 | `almalinux:8` | dnf | EL dnf security advisories and security apply |
-| `rockylinux:8` or `rockylinux:9` | dnf | Rocky/RHEL-like detection |
+| `almalinux:10` | dnf | EL10/DNF behavior, security advisories, and regular-user status reads |
+| `rockylinux:8` or `rockylinux:9` | dnf | legacy Rocky/RHEL-like detection |
+| `rockylinux/rockylinux:10` | dnf | Rocky 10 vendor image; EL10 update and security paths |
 | `oraclelinux:8` | dnf | Oracle Linux detection |
+| `oraclelinux:10` | dnf | Oracle Linux 10 detection and EL10 update paths |
 | `centos:7` | yum | legacy yum path; requires vault repo rewrite |
 
 ### VM Matrix
@@ -765,10 +769,14 @@ Before cutting a release, record:
   - Ubuntu 22.04:
   - Ubuntu 26.04:
   - Debian 12:
+  - Debian 13:
   - Fedora 40:
   - AlmaLinux 8:
-  - Rocky Linux:
-  - Oracle Linux:
+  - AlmaLinux 10:
+  - Rocky Linux 8/9:
+  - Rocky Linux 10:
+  - Oracle Linux 8:
+  - Oracle Linux 10:
   - CentOS 7:
   - Alpine 3.22:
 - VM results:
