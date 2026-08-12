@@ -33,20 +33,28 @@ Use one test environment at a time to avoid stressing the host.
 ### Container Matrix
 
 Containers are enough for most CLI, update, cron, Zabbix-file, and banner checks.
+Keep one explicit row per distribution major: an `8 or 9` result does not cover both.
+The distinct Linux bases in HosterImages' production profile list must all appear here;
+profiles that share the same base (currently Debian 13 and Debian 13 MVM-Docker) share
+this package-manager container check and retain separate profile-level VM integration tests.
 
 | Image | Package manager | Purpose |
 | --- | --- | --- |
 | `alpine:3.22` | apk | Alpine detection, system updates, explicit unsupported security state, cronie guard |
 | `ubuntu:22.04` | apt | apt updates, apt apply, banner, cache |
-| `ubuntu:26.04` | apt | future Ubuntu apt-get availability and OS name |
+| `ubuntu:24.04` | apt | production Ubuntu LTS updates, cache, and banner |
+| `ubuntu:26.04` | apt | production Ubuntu apt-get availability and OS name |
 | `debian:12-slim` | apt | Debian no-update or low-update path |
 | `debian:13-slim` | apt | current Debian stable detection, updates, cache, and banner |
-| `fedora:40` | dnf | dnf `repoquery` and `updateinfo` paths |
+| `fedora:44` | dnf | production Fedora DNF5 `repoquery` and `updateinfo` paths |
 | `almalinux:8` | dnf | EL dnf security advisories and security apply |
+| `almalinux:9` | dnf | EL9 update and security advisory paths |
 | `almalinux:10` | dnf | EL10/DNF behavior, security advisories, and regular-user status reads |
-| `rockylinux:8` or `rockylinux:9` | dnf | legacy Rocky/RHEL-like detection |
+| `rockylinux/rockylinux:8` | dnf | Rocky 8 detection and EL8 update paths |
+| `rockylinux/rockylinux:9` | dnf | Rocky 9 detection and EL9 update paths |
 | `rockylinux/rockylinux:10` | dnf | Rocky 10 vendor image; EL10 update and security paths |
 | `oraclelinux:8` | dnf | Oracle Linux detection |
+| `oraclelinux:9` | dnf | Oracle Linux 9 detection and EL9 update paths |
 | `oraclelinux:10` | dnf | Oracle Linux 10 detection and EL10 update paths |
 | `centos:7` | yum | legacy yum path; requires vault repo rewrite |
 
@@ -767,15 +775,19 @@ Before cutting a release, record:
 - `go build` result:
 - Container results:
   - Ubuntu 22.04:
+  - Ubuntu 24.04:
   - Ubuntu 26.04:
   - Debian 12:
   - Debian 13:
-  - Fedora 40:
+  - Fedora 44:
   - AlmaLinux 8:
+  - AlmaLinux 9:
   - AlmaLinux 10:
-  - Rocky Linux 8/9:
+  - Rocky Linux 8:
+  - Rocky Linux 9:
   - Rocky Linux 10:
   - Oracle Linux 8:
+  - Oracle Linux 9:
   - Oracle Linux 10:
   - CentOS 7:
   - Alpine 3.22:
