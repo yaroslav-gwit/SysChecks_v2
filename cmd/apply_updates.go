@@ -110,12 +110,16 @@ func runApplyUpdates() {
 		log.Fatal(err)
 	}
 
+	osType := detectOs()
+	if scope == updateScopeSecurity && !securityOnlyUpdatesSupported(osType) {
+		log.Fatal("Security-only updates are not supported on Alpine: apk does not expose Alpine secdb security advisories; use --scope system or query secdb separately")
+	}
+
 	// Delay before anything touches the network or disk, so the metadata refresh is
 	// spread too, not just the package installs.
 	waitBeforeApplyingUpdates(applyUpdatesMaxDelay, applyUpdatesNoDelay, runningInteractively())
 
 	updates := systemUpdates(false)
-	osType := detectOs()
 
 	updateList := updates.SecurityUpdatesList
 	if scope == updateScopeSystem {
@@ -130,6 +134,10 @@ func runApplyUpdates() {
 	applyUpdates(updateList, osType)
 	// Refresh cache after applying updates
 	checkUpdates(true, false, false)
+}
+
+func securityOnlyUpdatesSupported(osType detectOsStruct) bool {
+	return osType.packageManagerKind() != packageManagerAPK
 }
 
 func printApplyUpdatesPlan(scope string, updateList []string) {

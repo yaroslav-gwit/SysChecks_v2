@@ -1,6 +1,10 @@
 package cmd
 
-import "testing"
+import (
+	"context"
+	"reflect"
+	"testing"
+)
 
 func TestGetOldKernelsAlwaysKeepsRunningAndNewest(t *testing.T) {
 	installed := []string{"6.1.0", "6.2.0", "6.3.0"}
@@ -21,6 +25,30 @@ func TestReadOsRelease(t *testing.T) {
 	}
 	if values["PRETTY_NAME"] != "Debian GNU/Linux 12 (bookworm)" {
 		t.Fatalf("unexpected PRETTY_NAME: %q", values["PRETTY_NAME"])
+	}
+}
+
+func TestReadAlpineOsRelease(t *testing.T) {
+	values, err := readOsRelease("testdata/os-release-alpine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["ID"] != "alpine" || values["PRETTY_NAME"] != "Alpine Linux v3.22" {
+		t.Fatalf("unexpected Alpine release values: %#v", values)
+	}
+}
+
+func TestUnsupportedReleaseSelectsNoPackageManager(t *testing.T) {
+	values, err := readOsRelease("testdata/os-release-unsupported")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCommandExists := commandExistsFunc
+	t.Cleanup(func() { commandExistsFunc = originalCommandExists })
+	commandExistsFunc = func(string) bool { return false }
+
+	if got := selectPackageManager(detectOsStruct{osID: values["ID"]}); got != "" {
+		t.Fatalf("unsupported release selected package manager %q", got)
 	}
 }
 
@@ -62,6 +90,41 @@ func TestSelectPackageManagerFromIDLike(t *testing.T) {
 				t.Fatalf("selectPackageManager() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSelectPackageManagerAlpine(t *testing.T) {
+	originalCommandExists := commandExistsFunc
+	t.Cleanup(func() { commandExistsFunc = originalCommandExists })
+	commandExistsFunc = func(name string) bool { return name == "apk" }
+
+	if got := selectPackageManager(detectOsStruct{osID: "alpine"}); got != packageManagerAPK {
+		t.Fatalf("selectPackageManager() = %q, want %q", got, packageManagerAPK)
+	}
+	if got := selectPackageManager(detectOsStruct{osID: "custom", osIDLike: []string{"alpine"}}); got != packageManagerAPK {
+		t.Fatalf("ID_LIKE alpine selected %q, want %q", got, packageManagerAPK)
+	}
+}
+
+func TestApkPackageManagerCommands(t *testing.T) {
+	manager := apkPackageManager{}
+	if manager.Name() != "apk" {
+		t.Fatalf("Name() = %q", manager.Name())
+	}
+	cmd := manager.ApplyCommand(context.Background(), "musl")
+	if got, want := cmd.Args, []string{"apk", "--no-progress", "upgrade", "musl"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ApplyCommand args = %#v, want %#v", got, want)
+	}
+	if name, args := manager.KernelCleanupCommand([]string{"6.12.0"}); name != "" || args != nil {
+		t.Fatalf("KernelCleanupCommand() = %q, %#v; want no-op", name, args)
+	}
+}
+
+func TestParseApkVersionOutput(t *testing.T) {
+	input := "musl-1.2.5-r10 < 1.2.5-r11\napk-tools-2.14.6-r2 < 2.14.7-r0\ngcc-14-14.2.0-r1 < 14.2.0-r2\nignored-1.0-r0 = 1.0-r0\nWARNING: stale index\n"
+	want := []string{"musl [1.2.5-r10] (1.2.5-r11)", "apk-tools [2.14.6-r2] (2.14.7-r0)", "gcc-14 [14.2.0-r1] (14.2.0-r2)"}
+	if got := parseApkVersionOutput(input); !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseApkVersionOutput() = %#v, want %#v", got, want)
 	}
 }
 

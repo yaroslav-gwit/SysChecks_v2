@@ -155,8 +155,10 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 		updateIssues.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "No new system updates available" + NC + "\n")
 	}
 
-	if sysUpdates.NumberOfSecurityUpdates > 0 {
-		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Number of security updates available: " + NC + strconv.Itoa(sysUpdates.NumberOfSecurityUpdates) + "\n")
+	if securityCount, supported := securityUpdateCount(sysUpdates); !supported {
+		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Security update status: UNSUPPORTED — apk has no security-only channel" + NC + "\n")
+	} else if securityCount > 0 {
+		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Number of security updates available: " + NC + strconv.Itoa(securityCount) + "\n")
 	} else if showAll {
 		updateIssues.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "No new security updates available" + NC + "\n")
 	}

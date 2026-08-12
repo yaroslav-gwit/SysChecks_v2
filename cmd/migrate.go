@@ -12,9 +12,9 @@ import (
 )
 
 // Migration rewrites command strings that older versions wrote into files living on the
-// host: cron job files under /etc/cron.d and the Zabbix agent's UserParameter line. Those
-// files keep invoking the old spellings after an upgrade, so the binary alone cannot fix
-// them.
+// host: cron job files under /etc/cron.d and the Zabbix agent's UserParameter line. It also
+// repairs generated cron/cache modes that a restrictive root umask may have reduced to
+// 0600, hiding their state from regular-user login banners.
 //
 // This is a command rather than a startup check on purpose. `banner` runs on every SSH
 // login, and spending even 100-200 ms there to fix a one-time problem would tax every login
@@ -25,8 +25,11 @@ var (
 
 	migrateCmd = &cobra.Command{
 		Use:   "migrate",
-		Short: "Rewrite cron and Zabbix files that reference old command names",
+		Short: "Migrate generated commands and repair cron/cache readability",
 		Long: `Rewrite generated files that still reference pre-restructure command names.
+
+Also repairs SysChecks cron files and the update cache when restrictive permissions make
+them unreadable to regular-user login banners.
 
 Reports what would change and exits non-zero when anything is outstanding, so a monitoring
 check can ask "is this host fully migrated?". Pass --apply to actually rewrite. Installation
@@ -113,6 +116,7 @@ func migrationTargets() []string {
 	for _, path := range []string{
 		"/etc/zabbix/zabbix_agentd.conf",
 		"/etc/zabbix/zabbix_agent2.conf",
+		"/tmp/syscheck_updates.json",
 	} {
 		if _, err := os.Stat(path); err == nil {
 			targets = append(targets, path)
@@ -160,6 +164,18 @@ func runMigrate(apply bool) error {
 	var failures []string
 
 	for _, path := range migrationTargets() {
+		var permissionChanges []migrationChange
+		desiredMode, normalizeMode := migrationMode(path)
+		if info, statErr := os.Stat(path); statErr == nil && normalizeMode && info.Mode().Perm() != desiredMode {
+			permissionChanges = append(permissionChanges, migrationChange{
+				path:        path,
+				description: "make generated status readable by regular users",
+				before:      info.Mode().Perm().String(),
+				after:       desiredMode.String(),
+			})
+			allChanges = append(allChanges, permissionChanges...)
+		}
+
 		data, err := os.ReadFile(path)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", path, err))
@@ -167,7 +183,7 @@ func runMigrate(apply bool) error {
 		}
 
 		updated, changes := rewriteContent(path, string(data))
-		if len(changes) == 0 {
+		if len(changes) == 0 && len(permissionChanges) == 0 {
 			continue
 		}
 		allChanges = append(allChanges, changes...)
@@ -176,14 +192,20 @@ func runMigrate(apply bool) error {
 			continue
 		}
 
-		// Preserve the existing mode rather than assuming 0644: an operator may have
-		// tightened permissions on a cron file.
 		mode := os.FileMode(helpers.CRON_FILE_PERMS)
 		if info, statErr := os.Stat(path); statErr == nil {
 			mode = info.Mode().Perm()
 		}
-		if err := os.WriteFile(path, []byte(updated), mode); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", path, err))
+		if len(changes) > 0 {
+			if err := os.WriteFile(path, []byte(updated), mode); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", path, err))
+				continue
+			}
+		}
+		if normalizeMode {
+			if err := os.Chmod(path, desiredMode); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: could not set permissions: %v", path, err))
+			}
 		}
 	}
 
@@ -196,6 +218,13 @@ func runMigrate(apply bool) error {
 		return fmt.Errorf("%d change(s) pending; re-run with --apply", len(allChanges))
 	}
 	return nil
+}
+
+func migrationMode(path string) (os.FileMode, bool) {
+	if strings.HasPrefix(path, "/etc/cron.d/") || path == "/tmp/syscheck_updates.json" {
+		return os.FileMode(helpers.CRON_FILE_PERMS), true
+	}
+	return 0, false
 }
 
 func printMigrationReport(changes []migrationChange, failures []string, apply bool) {

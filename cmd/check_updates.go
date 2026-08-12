@@ -52,6 +52,10 @@ var (
 	reMatchSysUpdate = regexp.MustCompile(`^Inst\s+`)
 	reMatchSecUpdate = regexp.MustCompile(`(?i)security`)
 	reAptInstLine    = regexp.MustCompile(`^Inst\s+(\S+)\s+(?:\[(.*?)\]\s+)?\((.*?)\)$`)
+
+	// apk version emits name-version with no separator other than the final hyphen before a
+	// version ending in -rN. A greedy name capture preserves package names that end in digits.
+	reApkPackageVersion = regexp.MustCompile(`^(.+)-([0-9][0-9A-Za-z._+~-]*-r[0-9]+)$`)
 )
 
 var (
@@ -90,8 +94,11 @@ func checkUpdates(cacheCreate bool, cacheUse bool, jsonPretty bool) {
 		if err := os.WriteFile(cacheFileLocation, jsonOut, 0644); err != nil {
 			log.Fatalf("Error writing cache file: %v", err)
 		}
-		// Ensure file is readable by all users on hardened systems
-		_ = os.Chmod(cacheFileLocation, 0644)
+		// os.WriteFile does not change an existing file's mode and creation is filtered by
+		// umask, so enforce readability for regular-user login banners explicitly.
+		if err := os.Chmod(cacheFileLocation, 0644); err != nil {
+			log.Fatalf("Error setting cache file permissions: %v", err)
+		}
 		return
 	}
 
@@ -103,6 +110,7 @@ type systemUpdatesStruct struct {
 	numberOfSecurityUpdates  int
 	systemUpdatesAvailable   bool
 	securityUpdatesAvailable bool
+	securityUpdatesSupported bool
 	systemUpdatesList        []string
 	securityUpdatesList      []string
 	repositoryIssues         []repoIssue
@@ -120,8 +128,9 @@ func dnfCheck() systemUpdatesStruct {
 	defer cancel()
 
 	result := systemUpdatesStruct{
-		systemUpdatesList:   []string{},
-		securityUpdatesList: []string{},
+		securityUpdatesSupported: true,
+		systemUpdatesList:        []string{},
+		securityUpdatesList:      []string{},
 	}
 
 	// DNF cache refresh. The output is parsed rather than the exit code: DNF5 reports a
@@ -332,8 +341,9 @@ func debCheck() systemUpdatesStruct {
 	defer cancel()
 
 	result := systemUpdatesStruct{
-		systemUpdatesList:   []string{},
-		securityUpdatesList: []string{},
+		securityUpdatesSupported: true,
+		systemUpdatesList:        []string{},
+		securityUpdatesList:      []string{},
 	}
 
 	// APT cache refresh. Parsed rather than trusted to the exit code: apt-get update exits 0
@@ -393,6 +403,69 @@ func formatAptInstLine(line string) string {
 	return fmt.Sprintf("%s [%s] (%s)", name, oldVersion, candidate)
 }
 
+func apkCheck() systemUpdatesStruct {
+	helpers.RootUserCheck()
+
+	s := spinner.New(spinner.CharSets[14], 100*time.Millisecond, spinner.WithSuffix(" Running APK related procedures"))
+	s.Prefix = " "
+	s.Start()
+	defer s.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// apk itself has no security-advisory channel. Keeping this list nil is deliberate:
+	// JSON consumers receive null plus security_updates_status=unsupported, never a false 0.
+	result := systemUpdatesStruct{
+		securityUpdatesSupported: false,
+		systemUpdatesList:        []string{},
+	}
+
+	refreshOut, _, refreshErr := runCommandWithTimeoutCombined(ctx, "apk", "update")
+	if refreshErr != nil {
+		detail := strings.TrimSpace(string(refreshOut))
+		if detail == "" {
+			detail = refreshErr.Error()
+		}
+		reason, rank := classifyRepoFailure(detail)
+		result.repositoryIssues = []repoIssue{{
+			Repo:   "apk repositories",
+			Reason: reason,
+			rank:   rank,
+		}}
+	}
+
+	versionOut, _, err := runCommandWithTimeoutStdout(ctx, "apk", "version", "-l", "<")
+	if err != nil {
+		log.Fatalf("APK update query failed: %v", err)
+	}
+	result.systemUpdatesList = parseApkVersionOutput(string(versionOut))
+	result.numberOfSystemUpdates = len(result.systemUpdatesList)
+	result.systemUpdatesAvailable = result.numberOfSystemUpdates > 0
+
+	return result
+}
+
+// parseApkVersionOutput parses `apk version -l '<'`, whose upgrade rows are shaped as
+// "installed-package-version < candidate-version". Other comparison rows and warnings are
+// ignored so they cannot inflate the update count.
+func parseApkVersionOutput(output string) []string {
+	updates := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		parts := strings.Fields(line)
+		if len(parts) != 3 || parts[1] != "<" || parts[0] == "" || parts[2] == "" {
+			continue
+		}
+		installed := reApkPackageVersion.FindStringSubmatch(parts[0])
+		if len(installed) != 3 {
+			continue
+		}
+		updates = append(updates, fmt.Sprintf("%s [%s] (%s)", installed[1], installed[2], parts[2]))
+	}
+	return updates
+}
+
 func yumCheck() systemUpdatesStruct {
 	helpers.RootUserCheck()
 
@@ -405,8 +478,9 @@ func yumCheck() systemUpdatesStruct {
 	defer cancel()
 
 	result := systemUpdatesStruct{
-		systemUpdatesList:   []string{},
-		securityUpdatesList: []string{},
+		securityUpdatesSupported: true,
+		systemUpdatesList:        []string{},
+		securityUpdatesList:      []string{},
 	}
 
 	// YUM cache refresh
@@ -484,11 +558,13 @@ func shouldSkipYumLine(line string) bool {
 
 type systemUpdatesJsonStruct struct {
 	NumberOfSystemUpdates    int      `json:"system_updates"`
-	NumberOfSecurityUpdates  int      `json:"security_updates"`
+	NumberOfSecurityUpdates  *int     `json:"security_updates"`
 	SystemUpdatesAvailable   bool     `json:"system_updates_available"`
-	SecurityUpdatesAvailable bool     `json:"security_updates_available"`
+	SecurityUpdatesAvailable *bool    `json:"security_updates_available"`
 	SystemUpdatesList        []string `json:"system_updates_list"`
 	SecurityUpdatesList      []string `json:"security_updates_list"`
+	SystemUpdatesStatus      string   `json:"system_updates_status"`
+	SecurityUpdatesStatus    string   `json:"security_updates_status"`
 	// RepositoryIssues records repositories that failed to refresh. When this is non-empty
 	// the update counts above are incomplete, because the failed repository contributed
 	// nothing to them.
@@ -500,11 +576,13 @@ type systemUpdatesJsonStruct struct {
 }
 
 func systemUpdates(useCache bool) systemUpdatesJsonStruct {
+	// Detection must happen before the cache shortcut. In v1.3.0 an unsupported OS could
+	// read a missing cache and return a fully-patched-looking report with exit code 0.
+	osType := detectOs()
 	if useCache {
-		return readCache()
+		return readCache(osType)
 	}
 
-	osType := detectOs()
 	input := getPackageManager(osType).CheckUpdates()
 
 	repositoryIssues := input.repositoryIssues
@@ -512,21 +590,21 @@ func systemUpdates(useCache bool) systemUpdatesJsonStruct {
 		repositoryIssues = []repoIssue{}
 	}
 
-	return systemUpdatesJsonStruct{
-		NumberOfSystemUpdates:    input.numberOfSystemUpdates,
-		NumberOfSecurityUpdates:  input.numberOfSecurityUpdates,
-		SystemUpdatesAvailable:   input.systemUpdatesAvailable,
-		SecurityUpdatesAvailable: input.securityUpdatesAvailable,
-		SystemUpdatesList:        input.systemUpdatesList,
-		SecurityUpdatesList:      input.securityUpdatesList,
-		RepositoryIssues:         repositoryIssues,
-		RepositoryIssueCount:     len(repositoryIssues),
-		CacheExists:              false,
-		CacheUpToDate:            false,
+	result := systemUpdatesJsonStruct{
+		NumberOfSystemUpdates:  input.numberOfSystemUpdates,
+		SystemUpdatesAvailable: input.systemUpdatesAvailable,
+		SystemUpdatesList:      input.systemUpdatesList,
+		SystemUpdatesStatus:    updateStatus(repositoryIssues),
+		RepositoryIssues:       repositoryIssues,
+		RepositoryIssueCount:   len(repositoryIssues),
+		CacheExists:            false,
+		CacheUpToDate:          false,
 	}
+	applySecurityUpdateSupport(&result, input.securityUpdatesSupported, input.numberOfSecurityUpdates, input.securityUpdatesAvailable, input.securityUpdatesList)
+	return result
 }
 
-func readCache() systemUpdatesJsonStruct {
+func readCache(osType detectOsStruct) systemUpdatesJsonStruct {
 	const cacheFile = "/tmp/syscheck_updates.json"
 
 	result := systemUpdatesJsonStruct{
@@ -541,6 +619,8 @@ func readCache() systemUpdatesJsonStruct {
 		result.CacheDateCreated = time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
 		result.CacheExists = false
 		result.CacheUpToDate = false
+		result.SystemUpdatesStatus = "unknown"
+		applyCachedSecuritySupport(&result, osType, "unknown")
 		return result
 	}
 
@@ -548,6 +628,8 @@ func readCache() systemUpdatesJsonStruct {
 		log.Printf("Warning: Could not parse cache file: %v", err)
 		result.CacheExists = false
 		result.CacheUpToDate = false
+		result.SystemUpdatesStatus = "unknown"
+		applyCachedSecuritySupport(&result, osType, "unknown")
 		return result
 	}
 
@@ -562,6 +644,7 @@ func readCache() systemUpdatesJsonStruct {
 		if written, parseErr := time.Parse("2006-01-02 15:04:05", result.CacheDateCreated); parseErr == nil {
 			result.CacheUpToDate = written.Add(12 * time.Hour).After(time.Now())
 		}
+		normalizeCachedUpdateStatus(&result, osType)
 		return result
 	}
 
@@ -569,6 +652,65 @@ func readCache() systemUpdatesJsonStruct {
 	result.CacheDateCreated = modTime.Format("2006-01-02 15:04:05")
 	result.CacheExists = true
 	result.CacheUpToDate = modTime.Add(12 * time.Hour).After(time.Now())
+	normalizeCachedUpdateStatus(&result, osType)
 
 	return result
 }
+
+func updateStatus(repositoryIssues []repoIssue) string {
+	if len(repositoryIssues) > 0 {
+		return "incomplete"
+	}
+	return "ok"
+}
+
+func applySecurityUpdateSupport(result *systemUpdatesJsonStruct, supported bool, count int, available bool, updates []string) {
+	if !supported {
+		result.NumberOfSecurityUpdates = nil
+		result.SecurityUpdatesAvailable = nil
+		result.SecurityUpdatesList = nil
+		result.SecurityUpdatesStatus = "unsupported"
+		return
+	}
+	result.NumberOfSecurityUpdates = intPointer(count)
+	result.SecurityUpdatesAvailable = boolPointer(available)
+	result.SecurityUpdatesList = updates
+	result.SecurityUpdatesStatus = updateStatus(result.RepositoryIssues)
+}
+
+func applyCachedSecuritySupport(result *systemUpdatesJsonStruct, osType detectOsStruct, supportedStatus string) {
+	if osType.packageManagerKind() == packageManagerAPK {
+		applySecurityUpdateSupport(result, false, 0, false, nil)
+		return
+	}
+	if result.NumberOfSecurityUpdates == nil {
+		result.NumberOfSecurityUpdates = intPointer(0)
+	}
+	if result.SecurityUpdatesAvailable == nil {
+		result.SecurityUpdatesAvailable = boolPointer(false)
+	}
+	if result.SecurityUpdatesList == nil {
+		result.SecurityUpdatesList = []string{}
+	}
+	if result.SecurityUpdatesStatus == "" {
+		result.SecurityUpdatesStatus = supportedStatus
+	}
+}
+
+func normalizeCachedUpdateStatus(result *systemUpdatesJsonStruct, osType detectOsStruct) {
+	status := updateStatus(result.RepositoryIssues)
+	if result.SystemUpdatesStatus == "" {
+		result.SystemUpdatesStatus = status
+	}
+	applyCachedSecuritySupport(result, osType, status)
+}
+
+func securityUpdateCount(result systemUpdatesJsonStruct) (int, bool) {
+	if result.SecurityUpdatesStatus == "unsupported" || result.NumberOfSecurityUpdates == nil {
+		return 0, false
+	}
+	return *result.NumberOfSecurityUpdates, true
+}
+
+func intPointer(value int) *int    { return &value }
+func boolPointer(value bool) *bool { return &value }

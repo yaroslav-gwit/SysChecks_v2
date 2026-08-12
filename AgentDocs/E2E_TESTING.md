@@ -24,7 +24,7 @@ Validate every user-facing command and integration:
 - `cron updates --system`
 - `cron kernels`
 - `zabbix init`
-- Supported package managers: apt, dnf, yum
+- Supported package managers: apk, apt, dnf, yum
 
 ## Required Test Environments
 
@@ -36,6 +36,7 @@ Containers are enough for most CLI, update, cron, Zabbix-file, and banner checks
 
 | Image | Package manager | Purpose |
 | --- | --- | --- |
+| `alpine:3.22` | apk | Alpine detection, system updates, explicit unsupported security state, cronie guard |
 | `ubuntu:22.04` | apt | apt updates, apt apply, banner, cache |
 | `ubuntu:26.04` | apt | future Ubuntu apt-get availability and OS name |
 | `debian:12-slim` | apt | Debian no-update or low-update path |
@@ -291,14 +292,36 @@ jq -e '
 ' /tmp/updates.json
 ```
 
+Alpine image:
+
+```bash
+syschecks updates check --refresh --output json-pretty | tee /tmp/updates.json
+jq -e '
+  (.system_updates | type == "number") and
+  (.system_updates_available | type == "boolean") and
+  (.system_updates_list | type == "array") and
+  (.system_updates_status == "ok" or .system_updates_status == "incomplete") and
+  (.security_updates == null) and
+  (.security_updates_available == null) and
+  (.security_updates_list == null) and
+  (.security_updates_status == "unsupported")
+' /tmp/updates.json
+
+if syschecks updates apply --scope security --dry-run --no-delay; then
+  echo "security-only apk operation unexpectedly succeeded" >&2
+  exit 1
+fi
+```
+
 Pass criteria:
 
 - JSON parses.
 - Count fields are numeric.
 - Available fields are booleans.
-- List fields are arrays, never `null`.
+- List fields are arrays, never `null`, except Alpine's explicitly unsupported security-only list.
 - No package-manager progress or warning text corrupts JSON stdout.
 - On Fedora/Alma/Rocky with advisory metadata, security update rows come from advisories and are deduped by package.
+- On Alpine, system update data remains numeric while security-only data is explicit `unsupported`/`null`, never zero.
 
 Known acceptable cases:
 
@@ -552,19 +575,19 @@ rm -f /etc/cron.d/syschecks_cache \
 syschecks cron init
 test -f /etc/cron.d/syschecks_cache
 stat -c '%a %n' /etc/cron.d/syschecks_cache
-grep -q 'syschecks updates --cache-create' /etc/cron.d/syschecks_cache
+grep -q 'syschecks updates refresh' /etc/cron.d/syschecks_cache
 syschecks cron init --disable
 test ! -e /etc/cron.d/syschecks_cache
 
 syschecks cron updates --security
 test -f /etc/cron.d/syschecks_updates_security
 test ! -f /etc/cron.d/syschecks_updates_system
-grep -q 'syschecks apply-updates' /etc/cron.d/syschecks_updates_security
+grep -q 'syschecks updates apply --scope security' /etc/cron.d/syschecks_updates_security
 
 syschecks cron updates --system | tee /tmp/cron-system.txt
 test -f /etc/cron.d/syschecks_updates_system
 test ! -f /etc/cron.d/syschecks_updates_security
-grep -q 'syschecks apply-updates --system' /etc/cron.d/syschecks_updates_system
+grep -q 'syschecks updates apply --scope system' /etc/cron.d/syschecks_updates_system
 grep -q 'Warning: removed conflicting security-only updates cron job' /tmp/cron-system.txt
 
 syschecks cron updates --security | tee /tmp/cron-security.txt
@@ -581,7 +604,7 @@ test ! -e /etc/cron.d/syschecks_updates_system
 
 syschecks cron kernels --keep 4
 test -f /etc/cron.d/syschecks_kernel_cleanup
-grep -q 'syschecks kernel cleanup --execute --keep 4' /etc/cron.d/syschecks_kernel_cleanup
+grep -q 'syschecks kernel cleanup --yes --keep 4' /etc/cron.d/syschecks_kernel_cleanup
 syschecks cron kernels --disable
 test ! -e /etc/cron.d/syschecks_kernel_cleanup
 ```
@@ -608,6 +631,27 @@ Pass criteria:
 
 - Prints help and exits 0.
 - Does not create update cron files.
+
+Alpine-specific scheduler guard:
+
+```bash
+apk del cronie 2>/dev/null || true
+if syschecks schedule enable update-cache; then
+  echo 'ERROR: /etc/cron.d job accepted with only BusyBox crond' >&2
+  exit 1
+fi
+
+apk add cronie
+syschecks schedule enable update-cache
+test -f /etc/cron.d/syschecks_cache
+test "$(stat -c %a /etc/cron.d/syschecks_cache)" = 644
+```
+
+Pass criteria:
+
+- The first enable fails and explains that BusyBox ignores `/etc/cron.d`.
+- The second enable succeeds after `cronie` is installed.
+- `schedule enable updates --scope security` still fails because apk has no security-only channel.
 
 ## Zabbix Init Tests
 
@@ -726,6 +770,7 @@ Before cutting a release, record:
   - Rocky Linux:
   - Oracle Linux:
   - CentOS 7:
+  - Alpine 3.22:
 - VM results:
   - Ubuntu:
   - Alma/Rocky/RHEL:

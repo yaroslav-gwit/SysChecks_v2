@@ -115,6 +115,12 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 		Version:           GetVersion(),
 	}
 
+	securityCount, securitySupported := securityUpdateCount(sysUpdates)
+	securityDetail := "security-only update data is unsupported by this package manager"
+	if securitySupported {
+		securityDetail = fmt.Sprintf("%d available", securityCount)
+	}
+
 	data.Checks = bannerChecks{
 		KernelReboot: bannerCheck{
 			Healthy: !kernComp.kernelNeedsReboot,
@@ -137,8 +143,8 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 			Detail:  fmt.Sprintf("%d available", sysUpdates.NumberOfSystemUpdates),
 		},
 		SecurityUpdates: bannerCheck{
-			Healthy: sysUpdates.NumberOfSecurityUpdates == 0,
-			Detail:  fmt.Sprintf("%d available", sysUpdates.NumberOfSecurityUpdates),
+			Healthy: securitySupported && securityCount == 0,
+			Detail:  securityDetail,
 		},
 		Repositories: bannerCheck{
 			Healthy: len(sysUpdates.RepositoryIssues) == 0,

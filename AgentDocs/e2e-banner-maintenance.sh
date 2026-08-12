@@ -101,7 +101,7 @@ grep -q 'Warning: security-only and full-system update jobs are both active' /tm
 "$SYSCHECKS_BIN" cron autoupdate
 "$SYSCHECKS_BIN" cron kernels --keep 4
 test "$(stat -c %a /etc/cron.d/syschecks_kernel_cleanup)" = "644"
-grep -q 'kernel cleanup --execute --keep 4' /etc/cron.d/syschecks_kernel_cleanup
+grep -q 'kernel cleanup --yes --keep 4' /etc/cron.d/syschecks_kernel_cleanup
 "$SYSCHECKS_BIN" cron >/tmp/syschecks-cron-status-enabled.txt
 grep -q 'Syschecks self-update.*enabled.*Daily 03:30' /tmp/syschecks-cron-status-enabled.txt
 grep -q 'Kernel cleanup.*enabled.*Sunday 03:45' /tmp/syschecks-cron-status-enabled.txt

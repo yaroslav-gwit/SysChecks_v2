@@ -17,6 +17,7 @@ type packageManagerKind string
 
 const (
 	packageManagerAPT packageManagerKind = "apt"
+	packageManagerAPK packageManagerKind = "apk"
 	packageManagerDNF packageManagerKind = "dnf"
 	packageManagerYUM packageManagerKind = "yum"
 )
@@ -29,6 +30,7 @@ var (
 
 type detectOsStruct struct {
 	deb         bool
+	apk         bool
 	dnf         bool
 	yum         bool
 	unsupported bool
@@ -45,6 +47,8 @@ func (o detectOsStruct) packageManagerName() string {
 	switch {
 	case o.deb:
 		return string(packageManagerAPT)
+	case o.apk:
+		return string(packageManagerAPK)
 	case o.dnf:
 		return string(packageManagerDNF)
 	case o.yum:
@@ -79,6 +83,8 @@ func detectOsUncached() *detectOsStruct {
 	switch manager {
 	case packageManagerAPT:
 		osStruct.deb = true
+	case packageManagerAPK:
+		osStruct.apk = true
 	case packageManagerDNF:
 		osStruct.dnf = true
 	case packageManagerYUM:
@@ -124,6 +130,13 @@ func selectPackageManager(osInfo detectOsStruct) packageManagerKind {
 		"almalinux", "amzn", "amazon", "centos", "fedora", "ol",
 		"openeuler", "oracle", "rhel", "rocky",
 	}
+	alpineIDs := []string{"alpine"}
+
+	if stringInSet(osInfo.osID, alpineIDs) || stringInSetAny(osInfo.osIDLike, alpineIDs) {
+		if commandExistsFunc("apk") {
+			return packageManagerAPK
+		}
+	}
 
 	if stringInSet(osInfo.osID, debIDs) || stringInSetAny(osInfo.osIDLike, []string{"debian", "ubuntu"}) {
 		if commandExistsFunc("apt-get") {
@@ -150,6 +163,9 @@ func selectPackageManager(osInfo detectOsStruct) packageManagerKind {
 	}
 	if commandExistsFunc("yum") {
 		return packageManagerYUM
+	}
+	if commandExistsFunc("apk") {
+		return packageManagerAPK
 	}
 
 	return ""
@@ -199,6 +215,8 @@ func getPackageManager(osType detectOsStruct) packageManager {
 	switch osType.packageManagerKind() {
 	case packageManagerAPT:
 		return aptPackageManager{}
+	case packageManagerAPK:
+		return apkPackageManager{}
 	case packageManagerDNF:
 		return rpmPackageManager{binary: "dnf"}
 	case packageManagerYUM:
@@ -216,6 +234,8 @@ func (o detectOsStruct) packageManagerKind() packageManagerKind {
 	switch {
 	case o.deb:
 		return packageManagerAPT
+	case o.apk:
+		return packageManagerAPK
 	case o.dnf:
 		return packageManagerDNF
 	case o.yum:
@@ -229,6 +249,26 @@ type aptPackageManager struct{}
 
 func (aptPackageManager) Name() string {
 	return string(packageManagerAPT)
+}
+
+// apkPackageManager implements Alpine's native package operations. Alpine upgrades its
+// kernel package in place, so there are normally no parallel kernel packages to purge.
+type apkPackageManager struct{}
+
+func (apkPackageManager) Name() string {
+	return string(packageManagerAPK)
+}
+
+func (apkPackageManager) CheckUpdates() systemUpdatesStruct {
+	return apkCheck()
+}
+
+func (apkPackageManager) ApplyCommand(ctx context.Context, pkg string) *exec.Cmd {
+	return newCommand(ctx, "apk", "--no-progress", "upgrade", pkg)
+}
+
+func (apkPackageManager) KernelCleanupCommand(oldKernels []string) (string, []string) {
+	return "", nil
 }
 
 func (aptPackageManager) CheckUpdates() systemUpdatesStruct {

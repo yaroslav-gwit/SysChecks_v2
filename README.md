@@ -9,7 +9,7 @@ SysChecks is a Linux CLI for small operational checks and maintenance tasks. It 
 ## Features
 
 - Kernel reboot checks and old-kernel cleanup command generation
-- System and security update checks for apt, dnf, and yum systems
+- System update checks for apk, apt, dnf, and yum systems, with security-only capability reported explicitly
 - Optional update cache for fast monitoring reads
 - Controlled update application with a package lock file
 - Login banner with host, kernel, update, CPU, memory, and user-facing system data
@@ -138,6 +138,11 @@ sudo syschecks self-update
 Security-only and full-system update schedules are mutually exclusive. Enabling
 one removes the other—and any legacy duplicate schedule—with a CLI warning.
 
+On Alpine, install and enable `cronie` before enabling SysChecks schedules; the
+default BusyBox `crond` does not read `/etc/cron.d`. Alpine's apk client has no
+security-only advisory channel, so security counts/scopes are reported as
+unsupported rather than zero. Full-system checks and updates remain available.
+
 ## Command Tree
 
 ```text
@@ -194,11 +199,12 @@ Other paths:
 
 | Distribution family | Package manager | Notes |
 | --- | --- | --- |
+| Alpine Linux | apk | Full-system updates; security-only status is explicit `unsupported`; scheduling requires `cronie` |
 | Ubuntu, Debian, Pop!_OS, Linux Mint, Elementary, Kali, Raspberry Pi OS, Zorin, KDE neon | apt | Uses `apt-get` |
 | RHEL, AlmaLinux, Rocky Linux, Oracle Linux, Fedora, Amazon Linux, openEuler | dnf/yum | Prefers `dnf` when available |
 | CentOS 7 | yum | Legacy path |
 
-Package manager detection uses `/etc/os-release` `ID` and `ID_LIKE`, then verifies the available `apt-get`, `dnf`, or `yum` binary.
+Package manager detection uses `/etc/os-release` `ID` and `ID_LIKE`, then verifies the available `apk`, `apt-get`, `dnf`, or `yum` binary.
 
 ## Zabbix
 

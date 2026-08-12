@@ -160,6 +160,7 @@ func releaseDisplayName(id string) string {
 
 var releaseNameAliases = map[string]string{
 	"almalinux": "AlmaLinux",
+	"alpine":    "Alpine Linux",
 	"amzn":      "Amazon Linux",
 	"arch":      "Arch Linux",
 	"centos":    "CentOS",

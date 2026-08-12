@@ -1,6 +1,9 @@
 package cmd
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResolveOutputPrefersExplicitFlag(t *testing.T) {
 	defer func() { outputFlag = "" }()
@@ -145,6 +148,25 @@ func TestResolveScheduleScopeRequiresExplicitChoice(t *testing.T) {
 	scheduleScope = "both"
 	if _, err := resolveScheduleScope(); err == nil {
 		t.Fatal("invalid scope accepted")
+	}
+}
+
+func TestAlpineScheduleRequiresCronieAndRejectsSecurityScope(t *testing.T) {
+	previousScope := scheduleScope
+	t.Cleanup(func() { scheduleScope = previousScope })
+	alpine := detectOsStruct{manager: packageManagerAPK, osID: "alpine"}
+
+	scheduleScope = updateScopeSystem
+	if err := validateScheduleEnableForOS(scheduleJobUpdates, alpine, false); err == nil || !strings.Contains(err.Error(), "cronie") {
+		t.Fatalf("system schedule without cronie error = %v", err)
+	}
+	if err := validateScheduleEnableForOS(scheduleJobUpdates, alpine, true); err != nil {
+		t.Fatalf("system schedule with cronie rejected: %v", err)
+	}
+
+	scheduleScope = updateScopeSecurity
+	if err := validateScheduleEnableForOS(scheduleJobUpdates, alpine, true); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("security-only Alpine schedule error = %v", err)
 	}
 }
 

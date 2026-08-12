@@ -18,6 +18,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-08-12
+
+### Added
+- Alpine Linux support through a native `apk` package-manager backend for update checks and full-system update application. Existing static release binaries continue to run on musl; no separate Alpine binary is required.
+- Explicit `system_updates_status` and `security_updates_status` fields in update JSON. Alpine reports security-only data as `unsupported`, with the corresponding count, availability, and list fields set to `null` rather than a misleading zero/false/empty result.
+
+### Changed
+- Alpine scheduling requires the `cronie` package. `schedule enable` and its legacy aliases now fail loudly when only BusyBox `crond` is installed because BusyBox ignores `/etc/cron.d`.
+- Alpine kernel cleanup is a no-op because `apk` normally upgrades kernel packages in place instead of retaining parallel package versions.
+- `migrate --apply` also restores generated cron files and the update cache to mode `0644`, making status visible to regular-user login banners.
+
+### Fixed
+- `updates check` and `banner` now validate OS/package-manager support before taking the cached-read shortcut. Unsupported systems exit non-zero instead of reporting zero pending updates with exit code 0.
+- Security-only update application and scheduling on Alpine now report that apk cannot answer the request from Alpine secdb data instead of treating the unknown result as zero.
+- Cron and cache writers now apply `0644` after writing, so restrictive root umasks and pre-existing `0600` files no longer make regular-user banners report jobs/cache as missing while root sees them.
+
+---
+
 ## [1.3.0] - 2026-07-24
 
 ### Added
@@ -220,7 +238,8 @@ Each release section follows this format:
 
 ---
 
-[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.0.2...v1.1.0

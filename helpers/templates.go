@@ -46,9 +46,7 @@ MAILTO=root
 @reboot       root  sleep ${RANDOM:0:2} && syschecks updates refresh
 7 */12 * * *  root  sleep ${RANDOM:0:2} && syschecks updates refresh
 `
-	if err := os.WriteFile(CACHE_JOB, []byte(cronTemplate), CRON_FILE_PERMS); err != nil {
-		log.Fatalf("Error writing cron file %s: %v", CACHE_JOB, err)
-	}
+	writeCronFile(CACHE_JOB, cronTemplate)
 
 	fmt.Printf("Created cache cron job: %s\n", CACHE_JOB)
 }
@@ -78,9 +76,7 @@ COMMAND="syschecks updates apply --scope security"
 LOG_FILE="/var/log/syschecks_updates.log"
 15 4 * * *  root  sleep ${RANDOM:0:2} && touch ${LOG_FILE} && ${COMMAND} 2>&1 | tee -a ${LOG_FILE}
 `
-	if err := os.WriteFile(SECURITY_UPDATES_JOB, []byte(cronTemplate), CRON_FILE_PERMS); err != nil {
-		log.Fatalf("Error writing cron file %s: %v", SECURITY_UPDATES_JOB, err)
-	}
+	writeCronFile(SECURITY_UPDATES_JOB, cronTemplate)
 
 	fmt.Printf("Created security updates cron job: %s\n", SECURITY_UPDATES_JOB)
 }
@@ -103,9 +99,7 @@ COMMAND="syschecks updates apply --scope system"
 LOG_FILE="/var/log/syschecks_updates.log"
 15 4 * * *  root  sleep ${RANDOM:0:2} && touch ${LOG_FILE} && ${COMMAND} 2>&1 | tee -a ${LOG_FILE}
 `
-	if err := os.WriteFile(SYSTEM_UPDATES_JOB, []byte(cronTemplate), CRON_FILE_PERMS); err != nil {
-		log.Fatalf("Error writing cron file %s: %v", SYSTEM_UPDATES_JOB, err)
-	}
+	writeCronFile(SYSTEM_UPDATES_JOB, cronTemplate)
 
 	fmt.Printf("Created system updates cron job: %s\n", SYSTEM_UPDATES_JOB)
 }
@@ -126,9 +120,7 @@ COMMAND="syschecks self-update"
 LOG_FILE="/var/log/syschecks_selfupdate.log"
 30 3 * * *  root  sleep ${RANDOM:0:2} && touch ${LOG_FILE} && ${COMMAND} 2>&1 | tee -a ${LOG_FILE}
 `
-	if err := os.WriteFile(AUTOUPDATE_JOB, []byte(cronTemplate), CRON_FILE_PERMS); err != nil {
-		log.Fatalf("Error writing cron file %s: %v", AUTOUPDATE_JOB, err)
-	}
+	writeCronFile(AUTOUPDATE_JOB, cronTemplate)
 
 	fmt.Printf("Created auto-update cron job: %s\n", AUTOUPDATE_JOB)
 }
@@ -159,11 +151,21 @@ COMMAND="syschecks kernel cleanup --yes --keep %d"
 LOG_FILE="/var/log/syschecks_kernel_cleanup.log"
 45 3 * * 0  root  sleep ${RANDOM:0:2} && touch ${LOG_FILE} && ${COMMAND} 2>&1 | tee -a ${LOG_FILE}
 `, numberToKeep)
-	if err := os.WriteFile(KERNEL_CLEANUP_JOB, []byte(cronTemplate), CRON_FILE_PERMS); err != nil {
-		log.Fatalf("Error writing cron file %s: %v", KERNEL_CLEANUP_JOB, err)
-	}
+	writeCronFile(KERNEL_CLEANUP_JOB, cronTemplate)
 
 	fmt.Printf("Created kernel cleanup cron job: %s\n", KERNEL_CLEANUP_JOB)
+}
+
+// writeCronFile applies the final mode explicitly after creation. os.WriteFile's mode is
+// filtered through the caller's umask and does not update an existing file's permissions;
+// either case could leave a root-created 0600 file invisible to regular-user banners.
+func writeCronFile(path string, contents string) {
+	if err := os.WriteFile(path, []byte(contents), CRON_FILE_PERMS); err != nil {
+		log.Fatalf("Error writing cron file %s: %v", path, err)
+	}
+	if err := os.Chmod(path, CRON_FILE_PERMS); err != nil {
+		log.Fatalf("Error setting cron file permissions on %s: %v", path, err)
+	}
 }
 
 // KernelCleanupDisable removes the old-kernel cleanup job if present.

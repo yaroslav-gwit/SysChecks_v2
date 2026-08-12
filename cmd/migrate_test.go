@@ -4,6 +4,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"syschecks/helpers"
 	"testing"
 )
 
@@ -147,8 +148,20 @@ func TestGeneratedTemplatesNeedNoMigration(t *testing.T) {
 func TestMigrationTargetsIncludeCronAndZabbix(t *testing.T) {
 	// Only asserts the shape of the glob set; the files themselves are host-dependent.
 	for _, target := range migrationTargets() {
-		if !strings.HasPrefix(target, "/etc/cron.d/") && !strings.HasPrefix(target, "/etc/zabbix/") {
+		if !strings.HasPrefix(target, "/etc/cron.d/") && !strings.HasPrefix(target, "/etc/zabbix/") && target != "/tmp/syscheck_updates.json" {
 			t.Fatalf("unexpected migration target: %q", target)
 		}
+	}
+}
+
+func TestMigrationModeRepairsGeneratedStatusFiles(t *testing.T) {
+	for _, path := range []string{"/etc/cron.d/syschecks_cache", "/tmp/syscheck_updates.json"} {
+		mode, ok := migrationMode(path)
+		if !ok || mode != helpers.CRON_FILE_PERMS {
+			t.Fatalf("migrationMode(%q) = %04o, %v", path, mode, ok)
+		}
+	}
+	if _, ok := migrationMode("/etc/zabbix/zabbix_agentd.conf"); ok {
+		t.Fatal("Zabbix config mode must not be normalized")
 	}
 }

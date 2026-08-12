@@ -22,12 +22,16 @@ var (
 		Short:      "Schedule safe cleanup of old kernel packages",
 		Long:       `Create a weekly cron job that removes old kernel packages while retaining the running kernel and recent fallbacks. Use --disable to remove it.`,
 		Args:       cobra.NoArgs,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if cronKernelCleanupDisable {
 				helpers.KernelCleanupDisable()
-				return
+				return nil
+			}
+			if err := validateScheduleEnable(scheduleJobKernelClean); err != nil {
+				return err
 			}
 			helpers.KernelCleanupEnable(cronKernelNumberToKeep)
+			return nil
 		},
 	}
 )
@@ -42,12 +46,16 @@ var (
 		Short:      "Manage the scheduled update-cache refresh",
 		Long:       `Create the scheduled update-cache refresh job. Use --disable to remove it.`,
 		Args:       cobra.NoArgs,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if cronCacheDisable {
 				helpers.CacheDisable()
-				return
+				return nil
+			}
+			if err := validateScheduleEnable(scheduleJobUpdateCache); err != nil {
+				return err
 			}
 			helpers.CacheCreate()
+			return nil
 		},
 	}
 )
@@ -75,7 +83,17 @@ var (
 			if selected > 1 {
 				return fmt.Errorf("choose exactly one of --security, --system, or --disable")
 			}
-			return nil
+			if cronUpdatesDisable || (!cronSystemUpdates && !cronSecurityUpdates) {
+				return nil
+			}
+			legacyScope := updateScopeSystem
+			if cronSecurityUpdates {
+				legacyScope = updateScopeSecurity
+			}
+			previousScope := scheduleScope
+			scheduleScope = legacyScope
+			defer func() { scheduleScope = previousScope }()
+			return validateScheduleEnable(scheduleJobUpdates)
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 			if cronUpdatesDisable {
@@ -103,12 +121,16 @@ var (
 		Short:      "Create a scheduled cron job that keeps syschecks updated to the latest release",
 		Long:       `Create a scheduled cron job that updates syschecks to the latest GitHub release. Use --disable to remove it.`,
 		Args:       cobra.NoArgs,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if cronAutoUpdateDisable {
 				helpers.AutoUpdateDisable()
 			} else {
+				if err := validateScheduleEnable(scheduleJobSelfUpdate); err != nil {
+					return err
+				}
 				helpers.AutoUpdateEnable()
 			}
+			return nil
 		},
 	}
 )

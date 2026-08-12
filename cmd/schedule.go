@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 	"syschecks/helpers"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -115,6 +117,9 @@ var (
 			if !ok {
 				return fmt.Errorf("unknown job %q; valid jobs: %s", args[0], strings.Join(scheduleJobNames(false), ", "))
 			}
+			if err := validateScheduleEnable(args[0]); err != nil {
+				return err
+			}
 			return definition.enable()
 		},
 	}
@@ -141,6 +146,52 @@ var (
 		},
 	}
 )
+
+var alpineCronieInstalledFunc = alpineCronieInstalled
+
+// validateScheduleEnable prevents /etc/cron.d jobs from being created on Alpine when only
+// BusyBox crond is present. BusyBox ignores that directory, which would make a successful
+// `schedule enable` silently do nothing.
+func validateScheduleEnable(job string) error {
+	osType := detectOs()
+	if osType.packageManagerKind() != packageManagerAPK {
+		return nil
+	}
+	cronieInstalled := false
+	// Security-only updates are rejected before probing cronie so the caller receives the
+	// policy/capability error that applies even after cronie is installed.
+	if job != scheduleJobUpdates || scheduleScope != updateScopeSecurity {
+		cronieInstalled = alpineCronieInstalledFunc()
+	}
+	return validateScheduleEnableForOS(job, osType, cronieInstalled)
+}
+
+func validateScheduleEnableForOS(job string, osType detectOsStruct, cronieInstalled bool) error {
+	if osType.packageManagerKind() != packageManagerAPK {
+		return nil
+	}
+
+	if job == scheduleJobUpdates {
+		scope, err := resolveScheduleScope()
+		if err != nil {
+			return err
+		}
+		if scope == updateScopeSecurity {
+			return fmt.Errorf("security-only updates are not supported on Alpine: apk does not expose Alpine secdb security advisories; use --scope system")
+		}
+	}
+
+	if !cronieInstalled {
+		return fmt.Errorf("cannot enable %q on Alpine: BusyBox crond ignores /etc/cron.d; install and enable cronie first (apk add cronie)", job)
+	}
+	return nil
+}
+
+func alpineCronieInstalled() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return newCommand(ctx, "apk", "info", "-e", "cronie").Run() == nil
+}
 
 // resolveScheduleScope requires an explicit choice. Defaulting would silently pick an update
 // policy for the host, which is exactly the ambiguity the old three-boolean form created.
