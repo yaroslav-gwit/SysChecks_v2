@@ -120,7 +120,10 @@ var (
 			if err := validateScheduleEnable(args[0]); err != nil {
 				return err
 			}
-			return definition.enable()
+			if err := definition.enable(); err != nil {
+				return err
+			}
+			return refreshScheduleStatusCache()
 		},
 	}
 
@@ -135,14 +138,14 @@ var (
 				for _, definition := range scheduleJobDefinitions {
 					definition.disable()
 				}
-				return nil
+				return refreshScheduleStatusCache()
 			}
 			definition, ok := lookupScheduleJob(args[0])
 			if !ok {
 				return fmt.Errorf("unknown job %q; valid jobs: %s", args[0], strings.Join(scheduleJobNames(true), ", "))
 			}
 			definition.disable()
-			return nil
+			return refreshScheduleStatusCache()
 		},
 	}
 )

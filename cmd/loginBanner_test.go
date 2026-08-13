@@ -57,7 +57,7 @@ func TestRepositoryIssueLinesFitNarrowTerminal(t *testing.T) {
 	writeRepositoryIssues(&out, []repoIssue{
 		{Repo: "packages.microsoft.com bookworm", Reason: "missing GPG key EB3E94ADBE1229CF"},
 		{Repo: "dead-path", Reason: "not found (HTTP 404) — repository may have been removed"},
-	}, false, false)
+	}, "incomplete", false, false)
 
 	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
 		if width := runewidth.StringWidth(color.ClearCode(line)); width > 76 {
@@ -133,11 +133,11 @@ func TestUnsupportedSecurityOnlyWarnsOnlyWhenScheduled(t *testing.T) {
 		t.Fatal("supported package manager surfaced unsupported warning")
 	}
 
-	defaultCheck := securityUpdateBannerCheck(0, false, automaticOSUpdatesOff)
+	defaultCheck := securityUpdateBannerCheck(0, false, automaticOSUpdatesOff, "unsupported")
 	if !defaultCheck.Healthy || !strings.Contains(defaultCheck.Detail, "not applicable") {
 		t.Fatalf("default unsupported JSON check = %#v", defaultCheck)
 	}
-	securityOnlyCheck := securityUpdateBannerCheck(0, false, automaticOSUpdatesSecurity)
+	securityOnlyCheck := securityUpdateBannerCheck(0, false, automaticOSUpdatesSecurity, "unsupported")
 	if securityOnlyCheck.Healthy || !strings.Contains(securityOnlyCheck.Detail, "unsupported") {
 		t.Fatalf("scheduled unsupported JSON check = %#v", securityOnlyCheck)
 	}

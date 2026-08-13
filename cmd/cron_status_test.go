@@ -19,9 +19,9 @@ COMMAND="syschecks updates"
 		t.Fatal(err)
 	}
 
-	exists, schedules := readCronSchedules(path)
-	if !exists || len(schedules) != 2 {
-		t.Fatalf("readCronSchedules() = %v, %#v", exists, schedules)
+	state, schedules := readCronSchedules(path)
+	if state != cronFileReadable || len(schedules) != 2 {
+		t.Fatalf("readCronSchedules() = %v, %#v", state, schedules)
 	}
 }
 

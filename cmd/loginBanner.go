@@ -80,8 +80,12 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 	var content strings.Builder
 
 	userHello := emoji("🚀", noEmojies) + "Welcome back, " + getUserName() + "!"
+	scheduleStatuses := collectCronJobStatuses(cronJobDefinitions)
+	selfUpdate, selfUpdateKnown := selfUpdateStateForStatuses(scheduleStatuses)
 	versionStatus := displayVersion(GetShortVersion()) + " | self-update: "
-	if selfUpdateEnabled(helpers.AUTOUPDATE_JOB) {
+	if !selfUpdateKnown {
+		versionStatus += AMBER + "UNKNOWN" + NC
+	} else if selfUpdate {
 		versionStatus += LIGHT_GREEN + "ON" + NC
 	} else {
 		versionStatus += AMBER + "OFF" + NC
@@ -133,7 +137,7 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 
 	// Update status is exception-only: healthy automation and zero counts stay quiet.
 	var updateIssues strings.Builder
-	updateMode := currentAutomaticOSUpdateMode()
+	updateMode := automaticOSUpdateModeForStatuses(scheduleStatuses)
 	switch updateMode {
 	case automaticOSUpdatesSystem:
 		if showAll {
@@ -147,10 +151,16 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 		updateIssues.WriteString(LIGHT_RED + emoji("🔄", noEmojies) + "Automatic OS updates: CONFLICT — full-system and security-only jobs are both ON" + NC + "\n")
 	case automaticOSUpdatesOff:
 		updateIssues.WriteString(LIGHT_RED + emoji("🔄", noEmojies) + "Automatic OS updates: OFF — no scheduled system or security updates" + NC + "\n")
+	case automaticOSUpdatesUnknown:
+		updateIssues.WriteString(AMBER + emoji("🔄", noEmojies) + "Automatic OS updates: UNKNOWN — schedule status is unavailable" + NC + "\n")
 	}
 	sysUpdates := systemUpdates(true)
 
-	if sysUpdates.NumberOfSystemUpdates > 0 {
+	if sysUpdates.SystemUpdatesStatus != "ok" {
+		if showAll {
+			updateIssues.WriteString(AMBER + emoji("🔶", noEmojies) + "System update status: " + updateDataStatusDetail(sysUpdates.SystemUpdatesStatus) + NC + "\n")
+		}
+	} else if sysUpdates.NumberOfSystemUpdates > 0 {
 		updateIssues.WriteString(LIGHT_CYAN + emoji("🔶", noEmojies) + "Number of system updates available: " + NC + strconv.Itoa(sysUpdates.NumberOfSystemUpdates) + "\n")
 	} else if showAll {
 		updateIssues.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "No new system updates available" + NC + "\n")
@@ -160,13 +170,17 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 		if shouldWarnUnsupportedSecurity(supported, updateMode) {
 			updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Security update status: UNSUPPORTED — apk has no security-only channel" + NC + "\n")
 		}
+	} else if sysUpdates.SecurityUpdatesStatus != "ok" {
+		if showAll {
+			updateIssues.WriteString(AMBER + emoji("🛑", noEmojies) + "Security update status: " + updateDataStatusDetail(sysUpdates.SecurityUpdatesStatus) + NC + "\n")
+		}
 	} else if securityCount > 0 {
 		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Number of security updates available: " + NC + strconv.Itoa(securityCount) + "\n")
 	} else if showAll {
 		updateIssues.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "No new security updates available" + NC + "\n")
 	}
 
-	writeRepositoryIssues(&updateIssues, sysUpdates.RepositoryIssues, noEmojies, showAll)
+	writeRepositoryIssues(&updateIssues, sysUpdates.RepositoryIssues, sysUpdates.SystemUpdatesStatus, noEmojies, showAll)
 
 	if !sysUpdates.CacheUpToDate {
 		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Your update cache is out-of-date" + NC + "\n")
@@ -232,9 +246,9 @@ const bannerRepoIssueLimit = 4
 
 // writeRepositoryIssues renders failed repository refreshes. This is the only place an
 // operator finds out that update counts are understated because a repository is broken.
-func writeRepositoryIssues(out *strings.Builder, issues []repoIssue, noEmojies bool, showAll bool) {
+func writeRepositoryIssues(out *strings.Builder, issues []repoIssue, updateStatus string, noEmojies bool, showAll bool) {
 	if len(issues) == 0 {
-		if showAll {
+		if showAll && updateStatus == "ok" {
 			out.WriteString(LIGHT_GREEN + emoji("🌿", noEmojies) + "All repositories refreshed successfully" + NC + "\n")
 		}
 		return

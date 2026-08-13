@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"regexp"
 	"strings"
 	"syschecks/helpers"
@@ -85,19 +84,8 @@ func checkUpdates(cacheCreate bool, cacheUse bool, jsonPretty bool) {
 		result.CacheUpToDate = true
 		result.CacheDateCreated = time.Now().Format("2006-01-02 15:04:05")
 
-		jsonOut, err := json.Marshal(result)
-		if err != nil {
-			log.Fatalf("Error marshaling updates: %v", err)
-		}
-
-		cacheFileLocation := "/tmp/syscheck_updates.json"
-		if err := os.WriteFile(cacheFileLocation, jsonOut, 0644); err != nil {
-			log.Fatalf("Error writing cache file: %v", err)
-		}
-		// os.WriteFile does not change an existing file's mode and creation is filtered by
-		// umask, so enforce readability for regular-user login banners explicitly.
-		if err := os.Chmod(cacheFileLocation, 0644); err != nil {
-			log.Fatalf("Error setting cache file permissions: %v", err)
+		if err := writeUpdateStatusCache(result); err != nil {
+			log.Fatalf("Error writing status cache: %v", err)
 		}
 		return
 	}
@@ -605,18 +593,16 @@ func systemUpdates(useCache bool) systemUpdatesJsonStruct {
 }
 
 func readCache(osType detectOsStruct) systemUpdatesJsonStruct {
-	const cacheFile = "/tmp/syscheck_updates.json"
-
 	result := systemUpdatesJsonStruct{
 		SystemUpdatesList:   []string{},
 		SecurityUpdatesList: []string{},
 		RepositoryIssues:    []repoIssue{},
 	}
 
-	data, err := os.ReadFile(cacheFile)
+	data, err := readTrustedStatusCache()
 	if err != nil {
-		// Cache doesn't exist, return empty result with stale date
-		result.CacheDateCreated = time.Now().Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+		// Missing and unreadable caches both mean that no update result is available. Do not
+		// manufacture a timestamp or turn zero-value counters into a successful check.
 		result.CacheExists = false
 		result.CacheUpToDate = false
 		result.SystemUpdatesStatus = "unknown"
@@ -633,25 +619,20 @@ func readCache(osType detectOsStruct) systemUpdatesJsonStruct {
 		return result
 	}
 
-	// Get file modification time
-	fileInfo, err := os.Stat(cacheFile)
-	if err != nil {
-		log.Printf("Warning: Could not stat cache file: %v", err)
-		// The file was read, so it exists whatever stat says. Fall back to the timestamp the
-		// writer recorded rather than reporting a fresh cache as missing and stale.
-		result.CacheExists = true
+	// A schedule-only status document is valid but does not contain an update report yet.
+	if !result.CacheExists || result.CacheDateCreated == "" {
+		result.CacheExists = false
 		result.CacheUpToDate = false
-		if written, parseErr := time.Parse("2006-01-02 15:04:05", result.CacheDateCreated); parseErr == nil {
-			result.CacheUpToDate = written.Add(12 * time.Hour).After(time.Now())
-		}
-		normalizeCachedUpdateStatus(&result, osType)
+		result.CacheDateCreated = ""
+		result.SystemUpdatesStatus = "unknown"
+		applyCachedSecuritySupport(&result, osType, "unknown")
 		return result
 	}
 
-	modTime := fileInfo.ModTime()
-	result.CacheDateCreated = modTime.Format("2006-01-02 15:04:05")
-	result.CacheExists = true
-	result.CacheUpToDate = modTime.Add(12 * time.Hour).After(time.Now())
+	// Schedule mutations also update this document, so its filesystem mtime is not the age
+	// of the update report. Only the timestamp recorded by updates refresh is authoritative.
+	written, err := time.Parse("2006-01-02 15:04:05", result.CacheDateCreated)
+	result.CacheUpToDate = err == nil && written.Add(12*time.Hour).After(time.Now())
 	normalizeCachedUpdateStatus(&result, osType)
 
 	return result

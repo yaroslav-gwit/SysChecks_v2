@@ -27,6 +27,8 @@ type cronJobStatus struct {
 	action   string
 	active   bool
 	legacy   bool
+	unknown  bool
+	cached   bool
 }
 
 type automaticOSUpdateMode string
@@ -36,6 +38,7 @@ const (
 	automaticOSUpdatesSecurity automaticOSUpdateMode = "security"
 	automaticOSUpdatesSystem   automaticOSUpdateMode = "system"
 	automaticOSUpdatesConflict automaticOSUpdateMode = "conflict"
+	automaticOSUpdatesUnknown  automaticOSUpdateMode = "unknown"
 )
 
 var cronJobDefinitions = []cronJobDefinition{
@@ -84,6 +87,8 @@ var cronJobDefinitions = []cronJobDefinition{
 // symbol only makes a long list scannable without reading it.
 func cronEnabledCell(status cronJobStatus) string {
 	switch {
+	case status.unknown:
+		return "❔ unknown"
 	case status.state == "CONFLICT":
 		return "🛑 yes"
 	case status.active && status.legacy:
@@ -99,7 +104,11 @@ func printCronStatus() {
 	statuses := collectCronJobStatuses(cronJobDefinitions)
 	rows := make([][]string, 0, len(statuses))
 	for _, status := range statuses {
-		rows = append(rows, []string{status.name, cronEnabledCell(status), status.state, status.schedule, status.action})
+		state := status.state
+		if status.cached {
+			state += " (cached)"
+		}
+		rows = append(rows, []string{status.name, cronEnabledCell(status), state, status.schedule, status.action})
 	}
 
 	fmt.Println("SysChecks cron jobs (schedule shown in server local time)")
@@ -111,10 +120,41 @@ func printCronStatus() {
 }
 
 func collectCronJobStatuses(definitions []cronJobDefinition) []cronJobStatus {
+	statuses := collectLiveCronJobStatuses(definitions)
+	snapshot, hasSnapshot := readScheduleSnapshot()
+	if hasSnapshot {
+		cached := make(map[string]cronJobSnapshot, len(snapshot.Jobs))
+		for _, job := range snapshot.Jobs {
+			cached[job.Name] = job
+		}
+		for i := range statuses {
+			if !statuses[i].unknown {
+				continue
+			}
+			job, ok := cached[statuses[i].name]
+			if !ok || job.Unknown {
+				continue
+			}
+			statuses[i] = cronJobStatus{
+				name: job.Name, state: job.State, schedule: job.Schedule, action: job.Action,
+				active: job.Active, legacy: job.Legacy, cached: true,
+			}
+		}
+	}
+	markAutomaticUpdateConflict(statuses)
+	return statuses
+}
+
+func collectLiveCronJobStatuses(definitions []cronJobDefinition) []cronJobStatus {
 	statuses := make([]cronJobStatus, 0, len(definitions))
 	for _, definition := range definitions {
 		statuses = append(statuses, inspectCronJob(definition))
 	}
+	markAutomaticUpdateConflict(statuses)
+	return statuses
+}
+
+func markAutomaticUpdateConflict(statuses []cronJobStatus) {
 	if automaticUpdateConflict(statuses) {
 		for i := range statuses {
 			if statuses[i].name == "Security updates" || statuses[i].name == "Full system updates" {
@@ -122,19 +162,27 @@ func collectCronJobStatuses(definitions []cronJobDefinition) []cronJobStatus {
 			}
 		}
 	}
-	return statuses
 }
 
 func inspectCronJob(definition cronJobDefinition) cronJobStatus {
-	primaryExists, primarySchedules := readCronSchedules(definition.path)
+	primaryState, primarySchedules := readCronSchedules(definition.path)
 	legacySchedules := make([]string, 0)
+	unknown := primaryState == cronFileUnreadable
 	for _, path := range definition.legacyPaths {
-		_, schedules := readCronSchedules(path)
+		state, schedules := readCronSchedules(path)
+		unknown = unknown || state == cronFileUnreadable
 		for _, schedule := range schedules {
 			legacySchedules = append(legacySchedules, schedule+" (legacy)")
 		}
 	}
+	if unknown {
+		return cronJobStatus{
+			name: definition.name, state: "unknown", schedule: "unavailable",
+			action: "run with sudo: syschecks schedule list", unknown: true,
+		}
+	}
 
+	primaryExists := primaryState == cronFileReadable
 	active := len(primarySchedules) > 0 || len(legacySchedules) > 0
 	legacy := len(legacySchedules) > 0
 	state := "disabled"
@@ -177,10 +225,23 @@ func inspectCronJob(definition cronJobDefinition) cronJobStatus {
 	}
 }
 
-func readCronSchedules(path string) (bool, []string) {
-	file, err := os.Open(path)
+type cronFileReadState int
+
+const (
+	cronFileMissing cronFileReadState = iota
+	cronFileReadable
+	cronFileUnreadable
+)
+
+var openCronFile = os.Open
+
+func readCronSchedules(path string) (cronFileReadState, []string) {
+	file, err := openCronFile(path)
 	if err != nil {
-		return false, nil
+		if os.IsNotExist(err) {
+			return cronFileMissing, nil
+		}
+		return cronFileUnreadable, nil
 	}
 	defer file.Close()
 
@@ -202,7 +263,10 @@ func readCronSchedules(path string) (bool, []string) {
 			schedules = append(schedules, strings.Join(fields[:5], " "))
 		}
 	}
-	return true, uniqueStrings(schedules)
+	if scanner.Err() != nil {
+		return cronFileUnreadable, nil
+	}
+	return cronFileReadable, uniqueStrings(schedules)
 }
 
 func validCronTimeFields(fields []string) bool {
@@ -281,8 +345,14 @@ func automaticOSUpdateModeForStatuses(statuses []cronJobStatus) automaticOSUpdat
 	for _, status := range statuses {
 		switch status.name {
 		case "Security updates":
+			if status.unknown {
+				return automaticOSUpdatesUnknown
+			}
 			securityActive = status.active
 		case "Full system updates":
+			if status.unknown {
+				return automaticOSUpdatesUnknown
+			}
 			systemActive = status.active
 		}
 	}
@@ -296,6 +366,33 @@ func automaticOSUpdateModeForStatuses(statuses []cronJobStatus) automaticOSUpdat
 	default:
 		return automaticOSUpdatesOff
 	}
+}
+
+func selfUpdateStateForStatuses(statuses []cronJobStatus) (bool, bool) {
+	for _, status := range statuses {
+		if status.name != "Syschecks self-update" {
+			continue
+		}
+		if status.unknown {
+			return false, false
+		}
+		return status.active, true
+	}
+	return false, false
+}
+
+func scheduleStatusSource(statuses []cronJobStatus) string {
+	hasCached := false
+	for _, status := range statuses {
+		if status.unknown {
+			return "unknown"
+		}
+		hasCached = hasCached || status.cached
+	}
+	if hasCached {
+		return "cache"
+	}
+	return "live"
 }
 
 func uniqueStrings(values []string) []string {

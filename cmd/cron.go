@@ -25,13 +25,13 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cronKernelCleanupDisable {
 				helpers.KernelCleanupDisable()
-				return nil
+				return refreshScheduleStatusCache()
 			}
 			if err := validateScheduleEnable(scheduleJobKernelClean); err != nil {
 				return err
 			}
 			helpers.KernelCleanupEnable(cronKernelNumberToKeep)
-			return nil
+			return refreshScheduleStatusCache()
 		},
 	}
 )
@@ -49,13 +49,13 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cronCacheDisable {
 				helpers.CacheDisable()
-				return nil
+				return refreshScheduleStatusCache()
 			}
 			if err := validateScheduleEnable(scheduleJobUpdateCache); err != nil {
 				return err
 			}
 			helpers.CacheCreate()
-			return nil
+			return refreshScheduleStatusCache()
 		},
 	}
 )
@@ -95,7 +95,7 @@ var (
 			defer func() { scheduleScope = previousScope }()
 			return validateScheduleEnable(scheduleJobUpdates)
 		},
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if cronUpdatesDisable {
 				helpers.UpdatesDisable()
 			} else if cronSystemUpdates {
@@ -105,8 +105,9 @@ var (
 			} else if cronSecurityUpdates {
 				helpers.SecurityUpdates()
 			} else {
-				cmd.Help()
+				return cmd.Help()
 			}
+			return refreshScheduleStatusCache()
 		},
 	}
 )
@@ -130,7 +131,7 @@ var (
 				}
 				helpers.AutoUpdateEnable()
 			}
-			return nil
+			return refreshScheduleStatusCache()
 		},
 	}
 )

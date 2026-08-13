@@ -59,7 +59,8 @@ type bannerJSONStruct struct {
 	Kernel            kernelJsonOutputStruct  `json:"kernel"`
 	Updates           systemUpdatesJsonStruct `json:"updates"`
 	AutomaticUpdates  string                  `json:"automatic_updates"`
-	SelfUpdateEnabled bool                    `json:"self_update_enabled"`
+	SelfUpdateEnabled *bool                   `json:"self_update_enabled"`
+	ScheduleSource    string                  `json:"schedule_status_source"`
 	Version           string                  `json:"version"`
 	Healthy           bool                    `json:"healthy"`
 	Checks            bannerChecks            `json:"checks"`
@@ -77,7 +78,13 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 	ramInfo := helpers.GetRamInfoLinux()
 	kernComp := compareKernels()
 	sysUpdates := systemUpdates(true)
-	updateMode := currentAutomaticOSUpdateMode()
+	scheduleStatuses := collectCronJobStatuses(cronJobDefinitions)
+	updateMode := automaticOSUpdateModeForStatuses(scheduleStatuses)
+	selfUpdate, selfUpdateKnown := selfUpdateStateForStatuses(scheduleStatuses)
+	var selfUpdateValue *bool
+	if selfUpdateKnown {
+		selfUpdateValue = boolPointer(selfUpdate)
+	}
 
 	disks := make([]bannerDisk, 0)
 	lowDisks := make([]string, 0)
@@ -111,7 +118,8 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 		Kernel:            kernelJsonOutput(),
 		Updates:           sysUpdates,
 		AutomaticUpdates:  string(updateMode),
-		SelfUpdateEnabled: selfUpdateEnabled(helpers.AUTOUPDATE_JOB),
+		SelfUpdateEnabled: selfUpdateValue,
+		ScheduleSource:    scheduleStatusSource(scheduleStatuses),
 		Version:           GetVersion(),
 	}
 
@@ -134,14 +142,11 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 			Healthy: updateMode == automaticOSUpdatesSecurity || updateMode == automaticOSUpdatesSystem,
 			Detail:  string(updateMode),
 		},
-		SystemUpdates: bannerCheck{
-			Healthy: sysUpdates.NumberOfSystemUpdates == 0,
-			Detail:  fmt.Sprintf("%d available", sysUpdates.NumberOfSystemUpdates),
-		},
-		SecurityUpdates: securityUpdateBannerCheck(securityCount, securitySupported, updateMode),
+		SystemUpdates:   systemUpdateBannerCheck(sysUpdates),
+		SecurityUpdates: securityUpdateBannerCheck(securityCount, securitySupported, updateMode, sysUpdates.SecurityUpdatesStatus),
 		Repositories: bannerCheck{
-			Healthy: len(sysUpdates.RepositoryIssues) == 0,
-			Detail:  repositoryIssueDetail(sysUpdates.RepositoryIssues),
+			Healthy: sysUpdates.SystemUpdatesStatus == "ok" && len(sysUpdates.RepositoryIssues) == 0,
+			Detail:  repositoryIssueDetail(sysUpdates.RepositoryIssues, sysUpdates.SystemUpdatesStatus),
 		},
 		UpdateCache: bannerCheck{
 			Healthy: sysUpdates.CacheUpToDate,
@@ -153,14 +158,35 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 	return data
 }
 
-func securityUpdateBannerCheck(count int, supported bool, updateMode automaticOSUpdateMode) bannerCheck {
+func systemUpdateBannerCheck(updates systemUpdatesJsonStruct) bannerCheck {
+	if updates.SystemUpdatesStatus != "ok" {
+		return bannerCheck{Healthy: false, Detail: updateDataStatusDetail(updates.SystemUpdatesStatus)}
+	}
+	return bannerCheck{Healthy: updates.NumberOfSystemUpdates == 0, Detail: fmt.Sprintf("%d available", updates.NumberOfSystemUpdates)}
+}
+
+func securityUpdateBannerCheck(count int, supported bool, updateMode automaticOSUpdateMode, status string) bannerCheck {
 	if supported {
+		if status != "ok" {
+			return bannerCheck{Healthy: false, Detail: updateDataStatusDetail(status)}
+		}
 		return bannerCheck{Healthy: count == 0, Detail: fmt.Sprintf("%d available", count)}
 	}
 	if shouldWarnUnsupportedSecurity(supported, updateMode) {
 		return bannerCheck{Healthy: false, Detail: "security-only update data is unsupported by this package manager"}
 	}
 	return bannerCheck{Healthy: true, Detail: "not applicable: package manager has no security-only channel"}
+}
+
+func updateDataStatusDetail(status string) string {
+	switch status {
+	case "incomplete":
+		return "unknown: repository refresh was incomplete"
+	case "unknown", "":
+		return "unknown: no readable update cache"
+	default:
+		return status
+	}
 }
 
 // allChecksHealthy is deliberately explicit rather than reflective: adding a check should be
@@ -190,7 +216,10 @@ func kernelRebootDetail(kernComp compareKernelsStruct) string {
 	return "running " + kernComp.runningKernel + ", latest installed " + kernComp.latestInstalledKernel
 }
 
-func repositoryIssueDetail(issues []repoIssue) string {
+func repositoryIssueDetail(issues []repoIssue, updateStatus string) string {
+	if updateStatus == "unknown" || updateStatus == "" {
+		return "unknown: no readable update cache"
+	}
 	if len(issues) == 0 {
 		return "all repositories refreshed"
 	}

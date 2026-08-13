@@ -14,7 +14,8 @@ import (
 // Migration rewrites command strings that older versions wrote into files living on the
 // host: cron job files under /etc/cron.d and the Zabbix agent's UserParameter line. It also
 // repairs generated cron/cache modes that a restrictive root umask may have reduced to
-// 0600, hiding their state from regular-user login banners.
+// 0600 and records a readable schedule snapshot for hosts that intentionally prevent
+// regular users from traversing /etc/cron.d.
 //
 // This is a command rather than a startup check on purpose. `banner` runs on every SSH
 // login, and spending even 100-200 ms there to fix a one-time problem would tax every login
@@ -28,8 +29,8 @@ var (
 		Short: "Migrate generated commands and repair cron/cache readability",
 		Long: `Rewrite generated files that still reference pre-restructure command names.
 
-Also repairs SysChecks cron files and the update cache when restrictive permissions make
-them unreadable to regular-user login banners.
+Also repairs SysChecks cron/cache file modes and records schedule status outside /etc/cron.d,
+so regular-user login banners work when that directory is intentionally root-only.
 
 Reports what would change and exits non-zero when anything is outstanding, so a monitoring
 check can ask "is this host fully migrated?". Pass --apply to actually rewrite. Installation
@@ -206,6 +207,11 @@ func runMigrate(apply bool) error {
 			if err := os.Chmod(path, desiredMode); err != nil {
 				failures = append(failures, fmt.Sprintf("%s: could not set permissions: %v", path, err))
 			}
+		}
+	}
+	if apply {
+		if err := refreshScheduleStatusCache(); err != nil {
+			failures = append(failures, fmt.Sprintf("schedule status cache: %v", err))
 		}
 	}
 

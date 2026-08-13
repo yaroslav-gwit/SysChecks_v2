@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.3] - 2026-08-13
+
+### Fixed
+- Regular-user banners no longer report automatic OS updates and SysChecks self-update as
+  disabled when a hardened host intentionally prevents traversal of `/etc/cron.d`. Privileged
+  schedule changes and update refreshes now record a root-owned schedule snapshot in the
+  existing status cache; live cron state remains authoritative whenever it is readable.
+- Missing, unreadable, or untrusted update caches no longer receive a fabricated creation
+  timestamp or turn zero-value update and repository fields into healthy checks. The status
+  cache is written atomically as `0644` despite restrictive umasks and rejected unless it is
+  a root-owned regular file that cannot be modified by group or other users.
+
+---
+
 ## [1.3.2] - 2026-08-13
 
 ### Changed
@@ -252,7 +266,8 @@ Each release section follows this format:
 
 ---
 
-[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.2.0...v1.3.0
