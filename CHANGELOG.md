@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - None
 
 ### Changed
+- None
+
+### Fixed
+- None
+
+---
+
+## [1.3.2] - 2026-08-13
+
+### Changed
 - Alpine's unsupported security-only channel is no longer a default human-banner warning.
   It is shown only when a security-only scheduled job is actually present; update JSON
   continues to report the capability explicitly as `unsupported` with `null` values.
@@ -242,7 +252,8 @@ Each release section follows this format:
 
 ---
 
-[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/yaroslav-gwit/SysChecks_v2/compare/v1.1.0...v1.2.0
