@@ -133,7 +133,8 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 
 	// Update status is exception-only: healthy automation and zero counts stay quiet.
 	var updateIssues strings.Builder
-	switch currentAutomaticOSUpdateMode() {
+	updateMode := currentAutomaticOSUpdateMode()
+	switch updateMode {
 	case automaticOSUpdatesSystem:
 		if showAll {
 			updateIssues.WriteString(LIGHT_GREEN + emoji("🔄", noEmojies) + "Automatic OS updates: Full system updates ON" + NC + "\n")
@@ -156,7 +157,9 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 	}
 
 	if securityCount, supported := securityUpdateCount(sysUpdates); !supported {
-		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Security update status: UNSUPPORTED — apk has no security-only channel" + NC + "\n")
+		if shouldWarnUnsupportedSecurity(supported, updateMode) {
+			updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Security update status: UNSUPPORTED — apk has no security-only channel" + NC + "\n")
+		}
 	} else if securityCount > 0 {
 		updateIssues.WriteString(LIGHT_RED + emoji("🛑", noEmojies) + "Number of security updates available: " + NC + strconv.Itoa(securityCount) + "\n")
 	} else if showAll {
@@ -184,6 +187,13 @@ func showLoginBanner(noEmojies bool, showAll bool) {
 	rendered := boxNew.String("", strings.TrimRight(content.String(), "\n"))
 	rendered = addBannerHeader(rendered, userHello, versionStatus)
 	fmt.Printf("\n%s\n", rendered)
+}
+
+// Unsupported security-only data is expected on apk and is not itself a banner fault.
+// Surface it only when a security-only cron job is actually present (for example a legacy
+// or manually-written job); attempts made through `schedule enable` already fail loudly.
+func shouldWarnUnsupportedSecurity(supported bool, updateMode automaticOSUpdateMode) bool {
+	return !supported && updateMode == automaticOSUpdatesSecurity
 }
 
 // kernelCleanupThreshold is the installed-kernel count above which cleanup is suggested.

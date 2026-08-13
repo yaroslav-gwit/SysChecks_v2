@@ -116,10 +116,6 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 	}
 
 	securityCount, securitySupported := securityUpdateCount(sysUpdates)
-	securityDetail := "security-only update data is unsupported by this package manager"
-	if securitySupported {
-		securityDetail = fmt.Sprintf("%d available", securityCount)
-	}
 
 	data.Checks = bannerChecks{
 		KernelReboot: bannerCheck{
@@ -142,10 +138,7 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 			Healthy: sysUpdates.NumberOfSystemUpdates == 0,
 			Detail:  fmt.Sprintf("%d available", sysUpdates.NumberOfSystemUpdates),
 		},
-		SecurityUpdates: bannerCheck{
-			Healthy: securitySupported && securityCount == 0,
-			Detail:  securityDetail,
-		},
+		SecurityUpdates: securityUpdateBannerCheck(securityCount, securitySupported, updateMode),
 		Repositories: bannerCheck{
 			Healthy: len(sysUpdates.RepositoryIssues) == 0,
 			Detail:  repositoryIssueDetail(sysUpdates.RepositoryIssues),
@@ -158,6 +151,16 @@ func collectBannerData(diskUsedThreshold float64) bannerJSONStruct {
 
 	data.Healthy = allChecksHealthy(data.Checks)
 	return data
+}
+
+func securityUpdateBannerCheck(count int, supported bool, updateMode automaticOSUpdateMode) bannerCheck {
+	if supported {
+		return bannerCheck{Healthy: count == 0, Detail: fmt.Sprintf("%d available", count)}
+	}
+	if shouldWarnUnsupportedSecurity(supported, updateMode) {
+		return bannerCheck{Healthy: false, Detail: "security-only update data is unsupported by this package manager"}
+	}
+	return bannerCheck{Healthy: true, Detail: "not applicable: package manager has no security-only channel"}
 }
 
 // allChecksHealthy is deliberately explicit rather than reflective: adding a check should be

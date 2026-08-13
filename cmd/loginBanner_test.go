@@ -116,6 +116,33 @@ func TestKernelStatusRendersWithAlignedBorders(t *testing.T) {
 	}
 }
 
+func TestUnsupportedSecurityOnlyWarnsOnlyWhenScheduled(t *testing.T) {
+	for _, mode := range []automaticOSUpdateMode{
+		automaticOSUpdatesOff,
+		automaticOSUpdatesSystem,
+		automaticOSUpdatesConflict,
+	} {
+		if shouldWarnUnsupportedSecurity(false, mode) {
+			t.Errorf("unsupported security warning shown for update mode %q", mode)
+		}
+	}
+	if !shouldWarnUnsupportedSecurity(false, automaticOSUpdatesSecurity) {
+		t.Fatal("security-only schedule did not surface unsupported state")
+	}
+	if shouldWarnUnsupportedSecurity(true, automaticOSUpdatesSecurity) {
+		t.Fatal("supported package manager surfaced unsupported warning")
+	}
+
+	defaultCheck := securityUpdateBannerCheck(0, false, automaticOSUpdatesOff)
+	if !defaultCheck.Healthy || !strings.Contains(defaultCheck.Detail, "not applicable") {
+		t.Fatalf("default unsupported JSON check = %#v", defaultCheck)
+	}
+	securityOnlyCheck := securityUpdateBannerCheck(0, false, automaticOSUpdatesSecurity)
+	if securityOnlyCheck.Healthy || !strings.Contains(securityOnlyCheck.Detail, "unsupported") {
+		t.Fatalf("scheduled unsupported JSON check = %#v", securityOnlyCheck)
+	}
+}
+
 func TestSelfUpdateEnabled(t *testing.T) {
 	path := t.TempDir() + "/syschecks_autoupdate"
 	data := "# Created by syschecks\n30 3 * * * root syschecks self-update\n"

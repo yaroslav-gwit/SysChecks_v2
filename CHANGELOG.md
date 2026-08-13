@@ -11,10 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - None
 
 ### Changed
-- None
+- Alpine's unsupported security-only channel is no longer a default human-banner warning.
+  It is shown only when a security-only scheduled job is actually present; update JSON
+  continues to report the capability explicitly as `unsupported` with `null` values.
 
 ### Fixed
-- None
+- Alpine kernel status now ignores unversioned boot flavor aliases such as `vmlinuz-virt`
+  and discovers the exact installed kernel release from `/lib/modules`, restoring accurate
+  latest-kernel and reboot-required checks.
 
 ---
 

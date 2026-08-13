@@ -21,12 +21,13 @@ var (
 	reOemMatch = regexp.MustCompile(`-oem`)
 
 	// Boot file patterns
-	reVmlinuz      = regexp.MustCompile(`^vmlinuz-(.+)$`)
-	reRescueKernel = regexp.MustCompile(`rescue`)
-	reSystemMap    = regexp.MustCompile(`^System\.map-`)
-	reConfig       = regexp.MustCompile(`^config-`)
-	reInitrd       = regexp.MustCompile(`^initrd\.img`)
-	reRetpoline    = regexp.MustCompile(`^retpoline-`)
+	reVmlinuz       = regexp.MustCompile(`^vmlinuz-(.+)$`)
+	reRescueKernel  = regexp.MustCompile(`rescue`)
+	reSystemMap     = regexp.MustCompile(`^System\.map-`)
+	reConfig        = regexp.MustCompile(`^config-`)
+	reInitrd        = regexp.MustCompile(`^initrd\.img`)
+	reRetpoline     = regexp.MustCompile(`^retpoline-`)
+	reKernelVersion = regexp.MustCompile(`^[0-9]`)
 )
 
 var (
@@ -100,18 +101,36 @@ type installedKernelsStruct struct {
 	oemKernels     []string
 }
 
-// getInstalledKernels uses native Go directory reading instead of spawning ls
+// getInstalledKernels uses native Go directory reading instead of spawning ls.
+// /lib/modules is included because Alpine uses an unversioned /boot/vmlinuz-<flavor>
+// image (for example vmlinuz-virt), while its module directory carries the exact kernel
+// release reported by uname (for example 6.12.103-0-virt).
 func getInstalledKernels() installedKernelsStruct {
-	entries, err := os.ReadDir("/boot")
+	return getInstalledKernelsFromDirs("/boot", "/lib/modules")
+}
+
+func getInstalledKernelsFromDirs(bootDir string, modulesDir string) installedKernelsStruct {
+	bootEntries, err := os.ReadDir(bootDir)
 	if err != nil {
-		log.Printf("Warning: could not read /boot directory: %v", err)
-		return installedKernelsStruct{}
+		log.Printf("Warning: could not read %s directory: %v", bootDir, err)
 	}
 
-	var genericKernels []string
-	var oemKernels []string
+	genericSet := make(map[string]bool)
+	oemSet := make(map[string]bool)
+	addKernel := func(version string) {
+		// Flavor aliases such as Alpine's vmlinuz-virt are bootable images, but "virt"
+		// is not a version and must never be compared with uname -r.
+		if !reKernelVersion.MatchString(version) || reRescueKernel.MatchString(version) {
+			return
+		}
+		if reOemMatch.MatchString(version) {
+			oemSet[version] = true
+		} else {
+			genericSet[version] = true
+		}
+	}
 
-	for _, entry := range entries {
+	for _, entry := range bootEntries {
 		name := entry.Name()
 
 		// Skip non-vmlinuz files
@@ -120,25 +139,30 @@ func getInstalledKernels() installedKernelsStruct {
 			continue
 		}
 
-		version := matches[1]
-
-		// Skip rescue kernels
-		if reRescueKernel.MatchString(version) {
-			continue
-		}
-
 		// Skip auxiliary files
 		if reSystemMap.MatchString(name) || reConfig.MatchString(name) ||
 			reInitrd.MatchString(name) || reRetpoline.MatchString(name) {
 			continue
 		}
+		addKernel(matches[1])
+	}
 
-		// Categorize as OEM or generic
-		if reOemMatch.MatchString(version) {
-			oemKernels = append(oemKernels, version)
-		} else {
-			genericKernels = append(genericKernels, version)
+	// Module directories use the kernel release string on Alpine as well as the Debian
+	// and RPM families. Missing /lib/modules is normal in minimal containers, so it is a
+	// quiet optional source rather than an error.
+	if moduleEntries, moduleErr := os.ReadDir(modulesDir); moduleErr == nil {
+		for _, entry := range moduleEntries {
+			addKernel(entry.Name())
 		}
+	}
+
+	genericKernels := make([]string, 0, len(genericSet))
+	for version := range genericSet {
+		genericKernels = append(genericKernels, version)
+	}
+	oemKernels := make([]string, 0, len(oemSet))
+	for version := range oemSet {
+		oemKernels = append(oemKernels, version)
 	}
 
 	// Natural sort for proper version ordering
@@ -160,8 +184,10 @@ type compareKernelsStruct struct {
 }
 
 func compareKernels() compareKernelsStruct {
-	runningKernel := getRunningKernel()
-	allKernels := getInstalledKernels()
+	return compareKernelInventory(getRunningKernel(), getInstalledKernels())
+}
+
+func compareKernelInventory(runningKernel string, allKernels installedKernelsStruct) compareKernelsStruct {
 
 	// Select kernel list based on running kernel type
 	var activeKernels []string

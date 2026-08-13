@@ -323,6 +323,24 @@ if syschecks updates apply --scope security --dry-run --no-delay; then
   echo "security-only apk operation unexpectedly succeeded" >&2
   exit 1
 fi
+
+# Unsupported security data is expected and stays explicit in JSON, but must not be a
+# default human-banner complaint when no security-only schedule is configured.
+syschecks banner --no-emojis >/tmp/alpine-banner-default.txt
+if grep -q 'Security update status: UNSUPPORTED' /tmp/alpine-banner-default.txt; then
+  echo 'default Alpine banner complained about an inapplicable security-only channel' >&2
+  exit 1
+fi
+
+# A legacy or manually-written security-only job is an actionable misconfiguration and
+# must surface the warning. The supported CLI refuses to create this file itself.
+mkdir -p /etc/cron.d
+syschecks schedule disable updates >/dev/null
+printf '%s\n' '15 4 * * * root syschecks updates apply --scope security' \
+  >/etc/cron.d/syschecks_updates_security
+syschecks banner --no-emojis >/tmp/alpine-banner-security.txt
+grep -q 'Security update status: UNSUPPORTED' /tmp/alpine-banner-security.txt
+rm -f /etc/cron.d/syschecks_updates_security
 ```
 
 Pass criteria:
@@ -490,6 +508,31 @@ Pass criteria:
 Container note:
 
 - Containers share the host kernel and may have no meaningful `/boot` kernel list. The command should still exit 0 and fall back safely.
+
+Alpine VM check:
+
+```bash
+running_kernel="$(uname -r)"
+test -d "/lib/modules/$running_kernel"
+syschecks kernel --output json-pretty | tee /tmp/alpine-kernel.json
+jq -e --arg running "$running_kernel" '
+  (.reboot_required == false) and
+  (.running_kernel == $running) and
+  (.latest_installed_kernel == $running) and
+  (.list_of_installed_kernels | index($running) != null)
+' /tmp/alpine-kernel.json
+```
+
+Pass criteria:
+
+- Alpine's unversioned `/boot/vmlinuz-virt` (or another flavor alias) is never reported as
+  the latest kernel version.
+- The exact installed release comes from `/lib/modules` and matches `uname -r` when the
+  host is current.
+- After installing a newer same-flavor kernel but before rebooting, `reboot_required` is
+  `true` and `latest_installed_kernel` is the newer `/lib/modules` release.
+- After rebooting into it, the two release strings match and `reboot_required` returns to
+  `false`.
 
 ## Kernel Cleanup
 
